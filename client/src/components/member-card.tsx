@@ -14,6 +14,7 @@ interface MemberCardProps {
   status: "active" | "expired" | "pending" | "frozen";
   paymentStatus: "paid" | "pending" | "overdue";
   lastCheckIn?: Date;
+  biometricLinked?: boolean;
   onViewProfile: (id: string) => void;
   onSendReminder: (id: string) => void;
   onFreeze: (id: string) => void;
@@ -29,6 +30,7 @@ export function MemberCard({
   status,
   paymentStatus,
   lastCheckIn,
+  biometricLinked,
   onViewProfile,
   onSendReminder,
   onFreeze,
@@ -76,6 +78,11 @@ export function MemberCard({
               <Badge variant="secondary" className={paymentColors[paymentStatus]}>
                 {paymentStatus.toUpperCase()}
               </Badge>
+              {biometricLinked !== undefined && (
+                <Badge variant={biometricLinked ? "secondary" : "outline"}>
+                  {biometricLinked ? "Biometric Linked" : "No Biometric"}
+                </Badge>
+              )}
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
               {expiryDate && !isNaN(expiryDate.getTime()) && (

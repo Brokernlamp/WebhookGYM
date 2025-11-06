@@ -6,6 +6,48 @@ let isSyncing = false;
 let lastSyncTimestamp: Record<string, number> = {};
 let syncInterval: NodeJS.Timeout | null = null;
 let backgroundSyncEnabled = false;
+// Ensure local (SQLite) schema has required columns
+async function ensureLocalSchemaUpgrades(local: ReturnType<typeof getLocalDb>): Promise<void> {
+  const addColIfMissing = async (table: string, col: string, type: string) => {
+    try {
+      const info = await local.execute({ sql: `PRAGMA table_info(${table})`, args: [] });
+      const has = (info.rows as any[]).some((r: any) => r.name === col || r[1] === col);
+      if (!has) {
+        await local.execute({ sql: `ALTER TABLE ${table} ADD COLUMN ${col} ${type}` });
+      }
+    } catch (e) {
+      console.error(`Failed to ensure column ${table}.${col} locally:`, e);
+    }
+  };
+  const coreTables = ["members", "payments", "attendance", "equipment", "plans"];
+  for (const t of coreTables) {
+    await addColIfMissing(t, "updated_at", "TEXT");
+    await addColIfMissing(t, "deleted_at", "TEXT");
+  }
+  await addColIfMissing("members", "biometric_id", "TEXT");
+}
+// Ensure Turso (remote) schema has required columns
+async function ensureTursoSchemaUpgrades(turso: ReturnType<typeof getTursoDb>): Promise<void> {
+  const addColIfMissing = async (table: string, col: string, type: string) => {
+    try {
+      const info = await turso.execute({ sql: `PRAGMA table_info(${table})`, args: [] });
+      const has = (info.rows as any[]).some((r) => (r as any).name === col || (r as any)[1] === col);
+      if (!has) {
+        await turso.execute({ sql: `ALTER TABLE ${table} ADD COLUMN ${col} ${type}`, args: [] });
+      }
+    } catch (e) {
+      console.error(`Failed to ensure column ${table}.${col} on Turso:`, e);
+    }
+  };
+  const coreTables = ["members", "payments", "attendance", "equipment", "plans"];
+  for (const t of coreTables) {
+    await addColIfMissing(t, "updated_at", "TEXT");
+    await addColIfMissing(t, "deleted_at", "TEXT");
+  }
+  // Members requires biometric_id
+  await addColIfMissing("members", "biometric_id", "TEXT");
+}
+
 
 // Sync a single table row to Turso
 async function syncRowToTurso(
@@ -25,8 +67,9 @@ async function syncRowToTurso(
     
     if ((check.rows as any[]).length > 0) {
       // Update existing
-      const updates = cols.filter(c => c !== "id").map(c => `${c} = ?`).join(",");
-      const values = cols.map(c => row[c]);
+      const updatable = cols.filter(c => c !== "id");
+      const updates = updatable.map(c => `${c} = ?`).join(",");
+      const values = updatable.map(c => row[c]);
       await turso.execute({ 
         sql: `UPDATE ${table} SET ${updates} WHERE id = ?`, 
         args: [...values, row.id] 
@@ -62,8 +105,9 @@ async function syncRowFromTurso(
     
     if ((check.rows as any[]).length > 0) {
       // Update existing
-      const updates = cols.filter(c => c !== "id").map(c => `${c} = ?`).join(",");
-      const values = cols.map(c => row[c]);
+      const updatable = cols.filter(c => c !== "id");
+      const updates = updatable.map(c => `${c} = ?`).join(",");
+      const values = updatable.map(c => row[c]);
       await local.execute({ 
         sql: `UPDATE ${table} SET ${updates} WHERE id = ?`, 
         args: [...values, row.id] 
@@ -145,7 +189,11 @@ async function backgroundSyncFromTurso(): Promise<void> {
     }
     
     const turso = getTursoDb(tursoUrl, tursoToken);
+    // Ensure remote schema before any syncing
+    await ensureTursoSchemaUpgrades(turso);
     const local = getLocalDb();
+    // Ensure local schema before any syncing
+    await ensureLocalSchemaUpgrades(local);
     
     const tables = ["members", "payments", "attendance", "plans", "trainers", "equipment", "classes"];
     
@@ -162,23 +210,59 @@ async function backgroundSyncFromTurso(): Promise<void> {
         // Create maps for comparison
         const tursoMap = new Map(tursoRows.map((r: any) => [r.id, r]));
         const localMap = new Map(localRows.map((r: any) => [r.id, r]));
-        
-        // Find new/updated records in Turso
-        for (const [id, tursoRow] of tursoMap.entries()) {
+
+        // Union of IDs
+        const ids = new Set<string>([...Array.from(tursoMap.keys()), ...Array.from(localMap.keys())]);
+
+        const parseIso = (v: any): number => {
+          if (!v) return 0;
+          const d = new Date(v);
+          return isNaN(d.getTime()) ? 0 : d.getTime();
+        };
+
+        for (const id of ids) {
+          const tursoRow = tursoMap.get(id);
           const localRow = localMap.get(id);
-          
-          // Check if Turso row is newer (simple comparison - if different, Turso wins)
-          if (!localRow || JSON.stringify(localRow) !== JSON.stringify(tursoRow)) {
+
+          // Only on one side
+          if (tursoRow && !localRow) {
             await syncRowFromTurso(local, table, tursoRow);
+            continue;
           }
-        }
-        
-        // Find deleted records (in local but not in Turso)
-        for (const [id, localRow] of localMap.entries()) {
-          if (!tursoMap.has(id)) {
-            // Record exists in local but not in Turso - keep it (local wins)
-            // Or delete it if you want Turso to be source of truth
-            // For now, we keep local-only records
+          if (!tursoRow && localRow) {
+            await syncRowToTurso(turso, table, localRow);
+            continue;
+          }
+
+          if (!tursoRow || !localRow) continue; // safety
+
+          const tursoDeletedAt = parseIso((tursoRow as any).deleted_at);
+          const localDeletedAt = parseIso((localRow as any).deleted_at);
+          const tursoUpdatedAt = parseIso((tursoRow as any).updated_at);
+          const localUpdatedAt = parseIso((localRow as any).updated_at);
+
+          // Deletions win by latest deleted_at
+          if (tursoDeletedAt || localDeletedAt) {
+            if (tursoDeletedAt > localDeletedAt) {
+              // Propagate delete to local
+              await syncRowFromTurso(local, table, tursoRow);
+            } else if (localDeletedAt > tursoDeletedAt) {
+              // Propagate delete to turso
+              await syncRowToTurso(turso, table, localRow);
+            }
+            continue;
+          }
+
+          // Neither deleted: pick latest updated_at
+          if (tursoUpdatedAt > localUpdatedAt) {
+            await syncRowFromTurso(local, table, tursoRow);
+          } else if (localUpdatedAt > tursoUpdatedAt) {
+            await syncRowToTurso(turso, table, localRow);
+          } else {
+            // If timestamps equal or absent but data differs, prefer local to avoid overwriting user actions
+            if (JSON.stringify(localRow) !== JSON.stringify(tursoRow)) {
+              await syncRowToTurso(turso, table, localRow);
+            }
           }
         }
         

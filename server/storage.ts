@@ -75,6 +75,23 @@ export class TursoStorage implements IStorage {
       if (!hasBiometric) {
         await this.db.execute({ sql: `ALTER TABLE members ADD COLUMN biometric_id TEXT`, args: [] });
       }
+      // Add updated_at and deleted_at to core tables if missing
+      const addColIfMissing = async (table: string, col: string, type: string) => {
+        try {
+          const info = await this.db.execute({ sql: `PRAGMA table_info(${table})`, args: [] });
+          const has = (info.rows as any[]).some((r) => (r.name ?? r.cid ?? r[1]) === col || r?.name === col);
+          if (!has) {
+            await this.db.execute({ sql: `ALTER TABLE ${table} ADD COLUMN ${col} ${type}`, args: [] });
+          }
+        } catch {
+          // ignore per-table failures
+        }
+      };
+      const coreTables = ["members", "payments", "attendance", "equipment", "plans"];
+      for (const t of coreTables) {
+        await addColIfMissing(t, "updated_at", "TEXT");
+        await addColIfMissing(t, "deleted_at", "TEXT");
+      }
     } catch (e) {
       // ignore; best-effort
     }
@@ -164,7 +181,7 @@ export class TursoStorage implements IStorage {
     try {
       await this.ensureSchemaUpgrades();
       console.log("listMembers: executing query");
-      const r = await this.db.execute(`SELECT * FROM members ORDER BY name`);
+      const r = await this.db.execute(`SELECT * FROM members WHERE deleted_at IS NULL OR deleted_at = '' ORDER BY name`);
       console.log("listMembers: got rows", r.rows.length);
       const mapped = (r.rows as unknown[]).map((x: any) => {
         try {
@@ -219,8 +236,8 @@ export class TursoStorage implements IStorage {
         sql: `INSERT INTO members (
           id, name, email, phone, photo_url, login_code, biometric_id, plan_id, plan_name,
           start_date, expiry_date, status, payment_status, last_check_in,
-          emergency_contact, trainer_id, notes, gender, age
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          emergency_contact, trainer_id, notes, gender, age, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           id,
           member.name,
@@ -241,6 +258,8 @@ export class TursoStorage implements IStorage {
           (member as any).notes ?? null,
           (member as any).gender ?? null,
           (member as any).age ?? null,
+          new Date().toISOString(),
+          null,
         ],
       });
       console.log("Member inserted, rowsAffected:", result.rowsAffected);
@@ -265,7 +284,7 @@ export class TursoStorage implements IStorage {
     if (!current) return undefined;
     const merged = { ...current, ...member } as any;
     await this.db.execute({
-      sql: `UPDATE members SET name=?, email=?, phone=?, photo_url=?, login_code=?, biometric_id=?, plan_id=?, plan_name=?, start_date=?, expiry_date=?, status=?, payment_status=?, last_check_in=?, emergency_contact=?, trainer_id=?, notes=?, gender=?, age=? WHERE id=?`,
+      sql: `UPDATE members SET name=?, email=?, phone=?, photo_url=?, login_code=?, biometric_id=?, plan_id=?, plan_name=?, start_date=?, expiry_date=?, status=?, payment_status=?, last_check_in=?, emergency_contact=?, trainer_id=?, notes=?, gender=?, age=?, updated_at=? WHERE id=?`,
       args: [
         merged.name,
         merged.email,
@@ -285,6 +304,7 @@ export class TursoStorage implements IStorage {
         merged.notes ?? null,
         merged.gender ?? null,
         merged.age ?? null,
+        new Date().toISOString(),
         id,
       ],
     });
@@ -301,7 +321,8 @@ export class TursoStorage implements IStorage {
   }
 
   async deleteMember(id: string): Promise<boolean> {
-    const r = await this.db.execute({ sql: `DELETE FROM members WHERE id = ?`, args: [id] });
+    await this.ensureSchemaUpgrades();
+    const r = await this.db.execute({ sql: `UPDATE members SET deleted_at = ?, updated_at = ? WHERE id = ?`, args: [new Date().toISOString(), new Date().toISOString(), id] });
     const deleted = (r.rowsAffected ?? 0) > 0;
     
     // Auto-sync deletion to Turso (non-blocking)
@@ -315,14 +336,15 @@ export class TursoStorage implements IStorage {
   }
 
   async listPayments(): Promise<Payment[]> {
-    const r = await this.db.execute(`SELECT * FROM payments ORDER BY COALESCE(paid_date, due_date) DESC`);
+    await this.ensureSchemaUpgrades();
+    const r = await this.db.execute(`SELECT * FROM payments WHERE deleted_at IS NULL OR deleted_at = '' ORDER BY COALESCE(paid_date, due_date) DESC`);
     return (r.rows as unknown[]).map((x: any) => this.mapPayment(x)) as any;
   }
 
   async createPayment(payment: InsertPayment): Promise<Payment> {
     const id = randomUUID();
     await this.db.execute({
-      sql: `INSERT INTO payments (id, member_id, amount, payment_method, status, due_date, paid_date, plan_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO payments (id, member_id, amount, payment_method, status, due_date, paid_date, plan_name, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         id,
         payment.memberId,
@@ -332,6 +354,8 @@ export class TursoStorage implements IStorage {
         (payment as any).dueDate ?? null,
         (payment as any).paidDate ?? null,
         (payment as any).planName ?? null,
+        new Date().toISOString(),
+        null,
       ],
     });
     const r = await this.db.execute({ sql: `SELECT * FROM payments WHERE id = ?`, args: [id] });
@@ -361,7 +385,7 @@ export class TursoStorage implements IStorage {
     if (!cur) return undefined;
     const merged = { ...cur, ...payment } as any;
     await this.db.execute({
-      sql: `UPDATE payments SET member_id=?, amount=?, payment_method=?, status=?, due_date=?, paid_date=?, plan_name=? WHERE id=?`,
+      sql: `UPDATE payments SET member_id=?, amount=?, payment_method=?, status=?, due_date=?, paid_date=?, plan_name=?, updated_at=? WHERE id=?`,
       args: [
         merged.memberId,
         String(merged.amount ?? "0"),
@@ -370,6 +394,7 @@ export class TursoStorage implements IStorage {
         merged.dueDate ?? null,
         merged.paidDate ?? null,
         merged.planName ?? null,
+        new Date().toISOString(),
         id,
       ],
     });
@@ -388,7 +413,8 @@ export class TursoStorage implements IStorage {
   }
 
   async deletePayment(id: string): Promise<boolean> {
-    const r = await this.db.execute({ sql: `DELETE FROM payments WHERE id = ?`, args: [id] });
+    await this.ensureSchemaUpgrades();
+    const r = await this.db.execute({ sql: `UPDATE payments SET deleted_at = ?, updated_at = ? WHERE id = ?`, args: [new Date().toISOString(), new Date().toISOString(), id] });
     const deleted = (r.rowsAffected ?? 0) > 0;
     
     // Auto-sync deletion to Turso (non-blocking)
@@ -491,14 +517,16 @@ export class TursoStorage implements IStorage {
   }
 
   async listAttendance(): Promise<Attendance[]> {
-    const r = await this.db.execute(`SELECT * FROM attendance ORDER BY COALESCE(check_out_time, check_in_time) DESC`);
+    await this.ensureSchemaUpgrades();
+    const r = await this.db.execute(`SELECT * FROM attendance WHERE deleted_at IS NULL OR deleted_at = '' ORDER BY COALESCE(check_out_time, check_in_time) DESC`);
     return (r.rows as unknown[]).map((x: any) => this.mapAttendance(x)) as any;
   }
 
   async createAttendance(record: InsertAttendance): Promise<Attendance> {
+    await this.ensureSchemaUpgrades();
     const id = randomUUID();
     await this.db.execute({
-      sql: `INSERT INTO attendance (id, member_id, check_in_time, check_out_time, latitude, longitude, marked_via) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO attendance (id, member_id, check_in_time, check_out_time, latitude, longitude, marked_via, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         id,
         record.memberId,
@@ -507,6 +535,8 @@ export class TursoStorage implements IStorage {
         (record as any).latitude ?? null,
         (record as any).longitude ?? null,
         (record as any).markedVia ?? "manual",
+        new Date().toISOString(),
+        null,
       ],
     });
     const r = await this.db.execute({ sql: `SELECT * FROM attendance WHERE id = ?`, args: [id] });
@@ -535,7 +565,7 @@ export class TursoStorage implements IStorage {
     if (!cur) return undefined;
     const merged = { ...cur, ...record } as any;
     await this.db.execute({
-      sql: `UPDATE attendance SET member_id=?, check_in_time=?, check_out_time=?, latitude=?, longitude=?, marked_via=? WHERE id=?`,
+      sql: `UPDATE attendance SET member_id=?, check_in_time=?, check_out_time=?, latitude=?, longitude=?, marked_via=?, updated_at=? WHERE id=?`,
       args: [
         merged.memberId,
         merged.checkInTime ?? cur.check_in_time,
@@ -543,6 +573,7 @@ export class TursoStorage implements IStorage {
         merged.latitude ?? null,
         merged.longitude ?? null,
         merged.markedVia ?? cur.marked_via,
+        new Date().toISOString(),
         id,
       ],
     });
@@ -561,7 +592,8 @@ export class TursoStorage implements IStorage {
   }
 
   async deleteAttendance(id: string): Promise<boolean> {
-    const r = await this.db.execute({ sql: `DELETE FROM attendance WHERE id = ?`, args: [id] });
+    await this.ensureSchemaUpgrades();
+    const r = await this.db.execute({ sql: `UPDATE attendance SET deleted_at = ?, updated_at = ? WHERE id = ?`, args: [new Date().toISOString(), new Date().toISOString(), id] });
     const deleted = (r.rowsAffected ?? 0) > 0;
     
     // Auto-sync deletion to Turso (non-blocking)
@@ -645,8 +677,9 @@ export class TursoStorage implements IStorage {
   // Plans CRUD
   async listPlans(): Promise<Plan[]> {
     try {
+      await this.ensureSchemaUpgrades();
       const result = await this.db.execute({
-        sql: `SELECT * FROM plans ORDER BY name`,
+        sql: `SELECT * FROM plans WHERE deleted_at IS NULL OR deleted_at = '' ORDER BY name`,
       });
       return result.rows.map((row: any) => this.mapPlan(row)) as Plan[];
     } catch (error) {
@@ -680,7 +713,7 @@ export class TursoStorage implements IStorage {
       const id = `plan_${Date.now().toString().slice(-8)}`;
       const featuresJson = plan.features ? JSON.stringify(plan.features) : null;
       await this.db.execute({
-        sql: `INSERT INTO plans (id, name, duration, price, features, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
+        sql: `INSERT INTO plans (id, name, duration, price, features, is_active, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           id,
           plan.name,
@@ -688,6 +721,8 @@ export class TursoStorage implements IStorage {
           plan.price,
           featuresJson,
           plan.isActive !== undefined ? (plan.isActive ? 1 : 0) : 1,
+          new Date().toISOString(),
+          null,
         ],
       });
       const created = await this.getPlan(id);
@@ -736,6 +771,8 @@ export class TursoStorage implements IStorage {
     if (updates.length === 0) return current;
     
     args.push(id);
+    updates.push("updated_at = ?");
+    args.push(new Date().toISOString());
     await this.db.execute({
       sql: `UPDATE plans SET ${updates.join(", ")} WHERE id = ?`,
       args,
@@ -753,9 +790,10 @@ export class TursoStorage implements IStorage {
   }
 
   async deletePlan(id: string): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
     const result = await this.db.execute({
-      sql: `DELETE FROM plans WHERE id = ?`,
-      args: [id],
+      sql: `UPDATE plans SET deleted_at = ?, updated_at = ? WHERE id = ?`,
+      args: [new Date().toISOString(), new Date().toISOString(), id],
     });
     const deleted = (result.rowsAffected ?? 0) > 0;
     

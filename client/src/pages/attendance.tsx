@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, getQueryFn, queryClient } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AttendanceHeatmap } from "@/components/attendance-heatmap";
@@ -254,9 +255,39 @@ export default function Attendance() {
     .sort((a, b) => b.daysSince - a.daysSince)
     .slice(0, 10); // Top 10 absent members
 
-  const filteredCheckIns = todayCheckIns.filter((checkIn) =>
-    checkIn.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const [filterMode, setFilterMode] = useState<"today" | "week" | "all">("today");
+  const computeRange = (mode: "today" | "week" | "all") => {
+    if (mode === "today") {
+      return (a: any) => {
+        const d = parseDate(a.checkInTime);
+        return d && d.toDateString() === todayStr;
+      };
+    }
+    if (mode === "week") {
+      const start = new Date(today);
+      start.setDate(start.getDate() - 6);
+      return (a: any) => {
+        const d = parseDate(a.checkInTime);
+        return d && d >= start;
+      };
+    }
+    return (_a: any) => true;
+  };
+  const rangeFilter = computeRange(filterMode);
+  const displayedCheckIns = attendance
+    .filter(rangeFilter)
+    .map((a: any) => {
+      const m = memberById.get(a.memberId);
+      return {
+        id: a.id,
+        name: m?.name ?? a.memberId,
+        photoUrl: m?.photoUrl,
+        checkInTime: parseDate(a.checkInTime),
+        checkOutTime: parseDate(a.checkOutTime),
+      };
+    })
+    .filter((c: any) => c.checkInTime)
+    .filter((c: any) => c.name.toLowerCase().includes(searchQuery.toLowerCase()));
 
   const getInitials = (name: string) => {
     return name
@@ -384,7 +415,16 @@ export default function Attendance() {
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-          <CardTitle>Today's Check-ins ({todayCheckIns.length})</CardTitle>
+          <div className="flex items-center gap-4">
+            <CardTitle>Check-ins</CardTitle>
+            <Tabs value={filterMode} onValueChange={(v) => setFilterMode(v as any)}>
+              <TabsList>
+                <TabsTrigger value="today">Today</TabsTrigger>
+                <TabsTrigger value="week">This Week</TabsTrigger>
+                <TabsTrigger value="all">All</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
           <div className="relative w-64">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
@@ -398,7 +438,7 @@ export default function Attendance() {
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {filteredCheckIns.map((checkIn) => (
+            {displayedCheckIns.map((checkIn) => (
               <div
                 key={checkIn.id}
                 className="flex items-center justify-between p-4 border rounded-md hover-elevate"

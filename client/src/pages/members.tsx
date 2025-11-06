@@ -345,6 +345,7 @@ export default function Members() {
                 status={member.status}
                 paymentStatus={member.paymentStatus}
                 lastCheckIn={parseDate(member.lastCheckIn)}
+                biometricLinked={Boolean(member.biometricId ?? member.biometric_id)}
                 onViewProfile={handleViewProfile}
                 onSendReminder={handleSendReminder}
                 onFreeze={(id) => freezeMember.mutate(id)}
@@ -383,6 +384,7 @@ export default function Members() {
                   status={member.status}
                   paymentStatus={member.paymentStatus}
                   lastCheckIn={parseDate(member.lastCheckIn)}
+                  biometricLinked={true}
                   onViewProfile={handleViewProfile}
                   onSendReminder={handleSendReminder}
                   onFreeze={(id) => freezeMember.mutate(id)}
