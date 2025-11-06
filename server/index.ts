@@ -5,6 +5,7 @@ import { serveStatic, log } from "./vite";
 import { initWhatsApp } from "./whatsapp";
 import { initGoogleSheets } from "./google-sheets";
 import { startBackgroundSync } from "./auto-sync";
+import { startBiometricDevicePolling } from "./biometric-device";
 
 const app = express();
 
@@ -80,6 +81,15 @@ app.use((req, res, next) => {
     } catch (error) {
       console.error("Failed to start background sync:", error);
       // Continue server startup even if sync fails
+    }
+    
+    // Start biometric device polling (desktop mode only)
+    try {
+      startBiometricDevicePolling();
+      log("Biometric device polling service started");
+    } catch (error) {
+      console.error("Failed to start biometric device polling:", error);
+      // Continue server startup even if polling fails
     }
   }
 

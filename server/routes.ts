@@ -753,14 +753,31 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 			const s = await storage.getSettings();
 			const ip = s.biometricIp || "";
 			const port = s.biometricPort || "4370";
+			const commKey = s.biometricCommKey || "0";
+			
 			if (!ip) return res.status(400).json({ connected: false, error: "IP address not configured" });
-			// Simple TCP connection test (for now, just validate IP format)
+			
+			// Validate IP format
 			const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
 			if (!ipRegex.test(ip)) {
 				return res.status(400).json({ connected: false, error: "Invalid IP address format" });
 			}
-			// TODO: Implement actual TCP connection test with device SDK
-			return jsonOk(res, { connected: true, message: "Connection settings validated (full test pending SDK integration)" });
+			
+			// Test actual TCP connection to device
+			const { testDeviceConnection } = await import("./biometric-device");
+			const connected = await testDeviceConnection({
+				ip,
+				port,
+				commKey,
+				unlockSeconds: s.biometricUnlockSeconds || "3",
+				relayType: s.biometricRelayType || "NO"
+			});
+			
+			if (connected) {
+				return jsonOk(res, { connected: true, message: `Successfully connected to device at ${ip}:${port}` });
+			} else {
+				return res.status(400).json({ connected: false, error: "Could not connect to device. Check IP, port, and network connection." });
+			}
 		} catch (err) {
 			return res.status(500).json({ connected: false, error: err instanceof Error ? err.message : "Connection test failed" });
 		}
@@ -771,9 +788,18 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 			const s = await storage.getSettings();
 			const ip = s.biometricIp || "";
 			if (!ip) return res.status(400).json({ users: [], error: "IP address not configured" });
-			// TODO: Implement actual device user fetch with SDK
-			// For now, return empty array - will be populated when SDK is integrated
-			return jsonOk(res, { users: [] });
+			
+			// Fetch actual users from device
+			const { getDeviceUsers } = await import("./biometric-device");
+			const users = await getDeviceUsers({
+				ip,
+				port: s.biometricPort || "4370",
+				commKey: s.biometricCommKey || "0",
+				unlockSeconds: s.biometricUnlockSeconds || "3",
+				relayType: s.biometricRelayType || "NO"
+			});
+			
+			return jsonOk(res, { users });
 		} catch (err) {
 			return res.status(500).json({ users: [], error: err instanceof Error ? err.message : "Failed to fetch device users" });
 		}
@@ -805,6 +831,36 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 			return jsonOk(res, updated);
 		} catch (err) {
 			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to map biometric" });
+		}
+	});
+
+	// HTTP Push endpoint for eSSL devices (if device supports push notifications)
+	app.post("/essl/push", async (req: Request, res: Response) => {
+		try {
+			// eSSL devices can push scan events to this endpoint
+			const body = req.body;
+			const biometricId = body.userId || body.user_id || body.id;
+			
+			if (!biometricId) {
+				return res.status(400).json({ error: "Missing user ID" });
+			}
+			
+			// Process the scan event
+			const s = await storage.getSettings();
+			const { processScan } = await import("./biometric-device");
+			
+			await processScan(biometricId.toString(), {
+				ip: s.biometricIp || "",
+				port: s.biometricPort || "4370",
+				commKey: s.biometricCommKey || "0",
+				unlockSeconds: s.biometricUnlockSeconds || "3",
+				relayType: s.biometricRelayType || "NO"
+			});
+			
+			return jsonOk(res, { success: true, message: "Scan event processed" });
+		} catch (err) {
+			console.error("Error processing push event:", err);
+			return res.status(500).json({ error: err instanceof Error ? err.message : "Failed to process push event" });
 		}
 	});
 
