@@ -764,8 +764,8 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 			}
 			
 			// Test actual TCP connection to device
-			const { testDeviceConnection } = await import("./biometric-device");
-			const connected = await testDeviceConnection({
+            const { testDeviceConnection, pulseRelay } = await import("./biometric-device");
+            const connected = await testDeviceConnection({
 				ip,
 				port,
 				commKey,
@@ -774,7 +774,17 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 			});
 			
 			if (connected) {
-				return jsonOk(res, { connected: true, message: `Successfully connected to device at ${ip}:${port}` });
+                // Briefly pulse relay (1s) to physically confirm connection
+                try {
+                  await pulseRelay({
+                    ip,
+                    port,
+                    commKey,
+                    unlockSeconds: s.biometricUnlockSeconds || "3",
+                    relayType: s.biometricRelayType || "NO"
+                  }, 1);
+                } catch {}
+                return jsonOk(res, { connected: true, message: `Successfully connected to device at ${ip}:${port}` });
 			} else {
 				return res.status(400).json({ connected: false, error: "Could not connect to device. Check IP, port, and network connection." });
 			}

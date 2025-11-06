@@ -281,6 +281,11 @@ async function unlockDoor(settings: BiometricSettings, durationSeconds: number):
   });
 }
 
+// Public helper to trigger a brief relay pulse (e.g., for test-connection)
+export async function pulseRelay(settings: BiometricSettings, seconds: number = 1): Promise<boolean> {
+  return await unlockDoor(settings, seconds);
+}
+
 // Process a scan event
 export async function processScan(biometricId: string, settings: BiometricSettings): Promise<void> {
   try {
