@@ -24,6 +24,7 @@ export const members = pgTable("members", {
   phone: text("phone").notNull(),
   photoUrl: text("photo_url"),
   loginCode: text("login_code").notNull().unique(),
+  biometricId: text("biometric_id"),
   planId: varchar("plan_id"),
   planName: text("plan_name"),
   startDate: timestamp("start_date"),

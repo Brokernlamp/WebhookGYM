@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS members (
   phone TEXT NOT NULL,
   photo_url TEXT,
   login_code TEXT NOT NULL UNIQUE,
+  biometric_id TEXT,
   plan_id TEXT,
   plan_name TEXT,
   start_date TEXT,

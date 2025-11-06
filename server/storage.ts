@@ -14,6 +14,7 @@ import {
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { getDb } from "./db-factory";
+import { syncToTurso } from "./auto-sync";
 
 // modify the interface with any CRUD methods
 // you might need
@@ -64,6 +65,21 @@ export interface IStorage {
 
 export class TursoStorage implements IStorage {
   private db = getDb();
+  private ensuredUpgrades = false;
+
+  private async ensureSchemaUpgrades() {
+    if (this.ensuredUpgrades) return;
+    try {
+      const columns = await this.db.execute({ sql: `PRAGMA table_info(members)`, args: [] });
+      const hasBiometric = (columns.rows as any[]).some((r) => (r.name ?? r.cid ?? r[1]) === "biometric_id" || r?.name === "biometric_id");
+      if (!hasBiometric) {
+        await this.db.execute({ sql: `ALTER TABLE members ADD COLUMN biometric_id TEXT`, args: [] });
+      }
+    } catch (e) {
+      // ignore; best-effort
+    }
+    this.ensuredUpgrades = true;
+  }
 
   private mapMember(row: any): Member {
     // Handle both snake_case (DB) and camelCase (already mapped) formats
@@ -74,6 +90,7 @@ export class TursoStorage implements IStorage {
       phone: row.phone,
       photoUrl: row.photo_url ?? row.photoUrl ?? null,
       loginCode: row.login_code ?? row.loginCode,
+      biometricId: row.biometric_id ?? row.biometricId ?? null,
       planId: row.plan_id ?? row.planId ?? null,
       planName: row.plan_name ?? row.planName ?? null,
       startDate: row.start_date ?? row.startDate ?? null,
@@ -145,6 +162,7 @@ export class TursoStorage implements IStorage {
 
   async listMembers(): Promise<Member[]> {
     try {
+      await this.ensureSchemaUpgrades();
       console.log("listMembers: executing query");
       const r = await this.db.execute(`SELECT * FROM members ORDER BY name`);
       console.log("listMembers: got rows", r.rows.length);
@@ -165,6 +183,7 @@ export class TursoStorage implements IStorage {
   }
 
   async getMember(id: string): Promise<Member | undefined> {
+    await this.ensureSchemaUpgrades();
     const r = await this.db.execute({ sql: `SELECT * FROM members WHERE id = ?`, args: [id] });
     const row = r.rows[0];
     return row ? this.mapMember(row) : undefined;
@@ -172,6 +191,7 @@ export class TursoStorage implements IStorage {
 
   async createMember(member: InsertMember): Promise<Member> {
     try {
+      await this.ensureSchemaUpgrades();
       // Generate readable member ID: member_001, member_002, etc.
       let id = "member_001";
       try {
@@ -197,10 +217,10 @@ export class TursoStorage implements IStorage {
       console.log("Creating member:", id, member.name);
       const result = await this.db.execute({
         sql: `INSERT INTO members (
-          id, name, email, phone, photo_url, login_code, plan_id, plan_name,
+          id, name, email, phone, photo_url, login_code, biometric_id, plan_id, plan_name,
           start_date, expiry_date, status, payment_status, last_check_in,
           emergency_contact, trainer_id, notes, gender, age
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           id,
           member.name,
@@ -208,6 +228,7 @@ export class TursoStorage implements IStorage {
           member.phone,
           (member as any).photoUrl ?? null,
           member.loginCode,
+          (member as any).biometricId ?? null,
           (member as any).planId ?? null,
           (member as any).planName ?? null,
           (member as any).startDate ?? null,
@@ -225,6 +246,12 @@ export class TursoStorage implements IStorage {
       console.log("Member inserted, rowsAffected:", result.rowsAffected);
       const created = await this.getMember(id);
       if (!created) throw new Error("Failed to retrieve created member");
+      
+      // Auto-sync to Turso (non-blocking)
+      syncToTurso("members", id).catch(err => 
+        console.error("Failed to auto-sync new member to Turso:", err)
+      );
+      
       return created as Member;
     } catch (error) {
       console.error("createMember error:", error);
@@ -233,38 +260,58 @@ export class TursoStorage implements IStorage {
   }
 
   async updateMember(id: string, member: Partial<InsertMember>): Promise<Member | undefined> {
+    await this.ensureSchemaUpgrades();
     const current = await this.getMember(id);
     if (!current) return undefined;
-    const updated = { ...current, ...member } as any;
+    const merged = { ...current, ...member } as any;
     await this.db.execute({
-      sql: `UPDATE members SET name=?, email=?, phone=?, photo_url=?, login_code=?, plan_id=?, plan_name=?, start_date=?, expiry_date=?, status=?, payment_status=?, last_check_in=?, emergency_contact=?, trainer_id=?, notes=?, gender=?, age=? WHERE id=?`,
+      sql: `UPDATE members SET name=?, email=?, phone=?, photo_url=?, login_code=?, biometric_id=?, plan_id=?, plan_name=?, start_date=?, expiry_date=?, status=?, payment_status=?, last_check_in=?, emergency_contact=?, trainer_id=?, notes=?, gender=?, age=? WHERE id=?`,
       args: [
-        updated.name,
-        updated.email,
-        updated.phone,
-        updated.photoUrl ?? null,
-        updated.loginCode,
-        updated.planId ?? null,
-        updated.planName ?? null,
-        updated.startDate ?? null,
-        updated.expiryDate ?? null,
-        updated.status,
-        updated.paymentStatus,
-        updated.lastCheckIn ?? null,
-        updated.emergencyContact ?? null,
-        updated.trainerId ?? null,
-        updated.notes ?? null,
-        updated.gender ?? null,
-        updated.age ?? null,
+        merged.name,
+        merged.email,
+        merged.phone,
+        merged.photoUrl ?? null,
+        merged.loginCode,
+        merged.biometricId ?? null,
+        merged.planId ?? null,
+        merged.planName ?? null,
+        merged.startDate ?? null,
+        merged.expiryDate ?? null,
+        merged.status,
+        merged.paymentStatus,
+        merged.lastCheckIn ?? null,
+        merged.emergencyContact ?? null,
+        merged.trainerId ?? null,
+        merged.notes ?? null,
+        merged.gender ?? null,
+        merged.age ?? null,
         id,
       ],
     });
-    return await this.getMember(id);
+    const updated = await this.getMember(id);
+    
+    // Auto-sync to Turso (non-blocking)
+    if (updated) {
+      syncToTurso("members", id).catch(err => 
+        console.error("Failed to auto-sync updated member to Turso:", err)
+      );
+    }
+    
+    return updated;
   }
 
   async deleteMember(id: string): Promise<boolean> {
     const r = await this.db.execute({ sql: `DELETE FROM members WHERE id = ?`, args: [id] });
-    return (r.rowsAffected ?? 0) > 0;
+    const deleted = (r.rowsAffected ?? 0) > 0;
+    
+    // Auto-sync deletion to Turso (non-blocking)
+    if (deleted) {
+      syncToTurso("members", id).catch(err => 
+        console.error("Failed to auto-sync member deletion to Turso:", err)
+      );
+    }
+    
+    return deleted;
   }
 
   async listPayments(): Promise<Payment[]> {
@@ -289,47 +336,69 @@ export class TursoStorage implements IStorage {
     });
     const r = await this.db.execute({ sql: `SELECT * FROM payments WHERE id = ?`, args: [id] });
     const row = r.rows[0];
-    if (!row) {
-      return {
-        id,
-        memberId: payment.memberId,
-        amount: String((payment as any).amount ?? "0"),
-        paymentMethod: (payment as any).paymentMethod,
-        status: (payment as any).status,
-        dueDate: (payment as any).dueDate ?? null,
-        paidDate: (payment as any).paidDate ?? null,
-        planName: (payment as any).planName ?? null,
-      } as any;
-    }
-    return this.mapPayment(row) as any;
+    const created = row ? this.mapPayment(row) as any : {
+      id,
+      memberId: payment.memberId,
+      amount: String((payment as any).amount ?? "0"),
+      paymentMethod: (payment as any).paymentMethod,
+      status: (payment as any).status,
+      dueDate: (payment as any).dueDate ?? null,
+      paidDate: (payment as any).paidDate ?? null,
+      planName: (payment as any).planName ?? null,
+    } as any;
+    
+    // Auto-sync to Turso (non-blocking)
+    syncToTurso("payments", id).catch(err => 
+      console.error("Failed to auto-sync new payment to Turso:", err)
+    );
+    
+    return created;
   }
 
   async updatePayment(id: string, payment: Partial<InsertPayment>): Promise<Payment | undefined> {
     const current = await this.db.execute({ sql: `SELECT * FROM payments WHERE id = ?`, args: [id] });
     const cur = current.rows[0] as any;
     if (!cur) return undefined;
-    const updated = { ...cur, ...payment } as any;
+    const merged = { ...cur, ...payment } as any;
     await this.db.execute({
       sql: `UPDATE payments SET member_id=?, amount=?, payment_method=?, status=?, due_date=?, paid_date=?, plan_name=? WHERE id=?`,
       args: [
-        updated.memberId,
-        String(updated.amount ?? "0"),
-        updated.paymentMethod,
-        updated.status,
-        updated.dueDate ?? null,
-        updated.paidDate ?? null,
-        updated.planName ?? null,
+        merged.memberId,
+        String(merged.amount ?? "0"),
+        merged.paymentMethod,
+        merged.status,
+        merged.dueDate ?? null,
+        merged.paidDate ?? null,
+        merged.planName ?? null,
         id,
       ],
     });
     const r = await this.db.execute({ sql: `SELECT * FROM payments WHERE id = ?`, args: [id] });
     const row = r.rows[0];
-    return row ? this.mapPayment(row) as any : undefined;
+    const updated = row ? this.mapPayment(row) as any : undefined;
+    
+    // Auto-sync to Turso (non-blocking)
+    if (updated) {
+      syncToTurso("payments", id).catch(err => 
+        console.error("Failed to auto-sync updated payment to Turso:", err)
+      );
+    }
+    
+    return updated;
   }
 
   async deletePayment(id: string): Promise<boolean> {
     const r = await this.db.execute({ sql: `DELETE FROM payments WHERE id = ?`, args: [id] });
-    return (r.rowsAffected ?? 0) > 0;
+    const deleted = (r.rowsAffected ?? 0) > 0;
+    
+    // Auto-sync deletion to Turso (non-blocking)
+    if (deleted) {
+      syncToTurso("payments", id).catch(err => 
+        console.error("Failed to auto-sync payment deletion to Turso:", err)
+      );
+    }
+    
+    return deleted;
   }
 
   async listEquipment(): Promise<Equipment[]> {
@@ -354,19 +423,23 @@ export class TursoStorage implements IStorage {
     });
     const r = await this.db.execute({ sql: `SELECT * FROM equipment WHERE id = ?`, args: [id] });
     const row = r.rows[0];
-    if (!row) {
-      return {
-        id,
-        name: equipment.name,
-        category: (equipment as any).category,
-        purchaseDate: (equipment as any).purchaseDate ?? null,
-        warrantyExpiry: (equipment as any).warrantyExpiry ?? null,
-        lastMaintenance: (equipment as any).lastMaintenance ?? null,
-        nextMaintenance: (equipment as any).nextMaintenance ?? null,
-        status: (equipment as any).status,
-      } as any;
-    }
-    return this.mapEquipment(row) as any;
+    const created = row ? this.mapEquipment(row) as any : {
+      id,
+      name: equipment.name,
+      category: (equipment as any).category,
+      purchaseDate: (equipment as any).purchaseDate ?? null,
+      warrantyExpiry: (equipment as any).warrantyExpiry ?? null,
+      lastMaintenance: (equipment as any).lastMaintenance ?? null,
+      nextMaintenance: (equipment as any).nextMaintenance ?? null,
+      status: (equipment as any).status,
+    } as any;
+    
+    // Auto-sync to Turso (non-blocking)
+    syncToTurso("equipment", id).catch(err => 
+      console.error("Failed to auto-sync new equipment to Turso:", err)
+    );
+    
+    return created;
   }
 
   async updateEquipment(id: string, equipment: Partial<InsertEquipment>): Promise<Equipment | undefined> {
@@ -375,28 +448,46 @@ export class TursoStorage implements IStorage {
     if (!cur) return undefined;
     // Map DB row (snake_case) to camelCase before merging to avoid losing fields
     const curMapped = this.mapEquipment(cur) as any;
-    const updated = { ...curMapped, ...equipment } as any;
+    const merged = { ...curMapped, ...equipment } as any;
     await this.db.execute({
       sql: `UPDATE equipment SET name=?, category=?, purchase_date=?, warranty_expiry=?, last_maintenance=?, next_maintenance=?, status=? WHERE id=?`,
       args: [
-        updated.name,
-        updated.category,
-        updated.purchaseDate ?? null,
-        updated.warrantyExpiry ?? null,
-        updated.lastMaintenance ?? null,
-        updated.nextMaintenance ?? null,
-        updated.status,
+        merged.name,
+        merged.category,
+        merged.purchaseDate ?? null,
+        merged.warrantyExpiry ?? null,
+        merged.lastMaintenance ?? null,
+        merged.nextMaintenance ?? null,
+        merged.status,
         id,
       ],
     });
     const r = await this.db.execute({ sql: `SELECT * FROM equipment WHERE id = ?`, args: [id] });
     const row = r.rows[0];
-    return row ? this.mapEquipment(row) as any : undefined;
+    const updated = row ? this.mapEquipment(row) as any : undefined;
+    
+    // Auto-sync to Turso (non-blocking)
+    if (updated) {
+      syncToTurso("equipment", id).catch(err => 
+        console.error("Failed to auto-sync updated equipment to Turso:", err)
+      );
+    }
+    
+    return updated;
   }
 
   async deleteEquipment(id: string): Promise<boolean> {
     const r = await this.db.execute({ sql: `DELETE FROM equipment WHERE id = ?`, args: [id] });
-    return (r.rowsAffected ?? 0) > 0;
+    const deleted = (r.rowsAffected ?? 0) > 0;
+    
+    // Auto-sync deletion to Turso (non-blocking)
+    if (deleted) {
+      syncToTurso("equipment", id).catch(err => 
+        console.error("Failed to auto-sync equipment deletion to Turso:", err)
+      );
+    }
+    
+    return deleted;
   }
 
   async listAttendance(): Promise<Attendance[]> {
@@ -420,45 +511,67 @@ export class TursoStorage implements IStorage {
     });
     const r = await this.db.execute({ sql: `SELECT * FROM attendance WHERE id = ?`, args: [id] });
     const row = r.rows[0];
-    if (!row) {
-      return {
-        id,
-        memberId: record.memberId,
-        checkInTime: (record as any).checkInTime ?? new Date().toISOString(),
-        checkOutTime: (record as any).checkOutTime ?? null,
-        latitude: (record as any).latitude ?? null,
-        longitude: (record as any).longitude ?? null,
-        markedVia: (record as any).markedVia ?? "manual",
-      } as any;
-    }
-    return this.mapAttendance(row) as any;
+    const created = row ? this.mapAttendance(row) as any : {
+      id,
+      memberId: record.memberId,
+      checkInTime: (record as any).checkInTime ?? new Date().toISOString(),
+      checkOutTime: (record as any).checkOutTime ?? null,
+      latitude: (record as any).latitude ?? null,
+      longitude: (record as any).longitude ?? null,
+      markedVia: (record as any).markedVia ?? "manual",
+    } as any;
+    
+    // Auto-sync to Turso (non-blocking)
+    syncToTurso("attendance", id).catch(err => 
+      console.error("Failed to auto-sync new attendance to Turso:", err)
+    );
+    
+    return created;
   }
 
   async updateAttendance(id: string, record: Partial<InsertAttendance>): Promise<Attendance | undefined> {
     const current = await this.db.execute({ sql: `SELECT * FROM attendance WHERE id = ?`, args: [id] });
     const cur = current.rows[0] as any;
     if (!cur) return undefined;
-    const updated = { ...cur, ...record } as any;
+    const merged = { ...cur, ...record } as any;
     await this.db.execute({
       sql: `UPDATE attendance SET member_id=?, check_in_time=?, check_out_time=?, latitude=?, longitude=?, marked_via=? WHERE id=?`,
       args: [
-        updated.memberId,
-        updated.checkInTime ?? cur.check_in_time,
-        updated.checkOutTime ?? null,
-        updated.latitude ?? null,
-        updated.longitude ?? null,
-        updated.markedVia ?? cur.marked_via,
+        merged.memberId,
+        merged.checkInTime ?? cur.check_in_time,
+        merged.checkOutTime ?? null,
+        merged.latitude ?? null,
+        merged.longitude ?? null,
+        merged.markedVia ?? cur.marked_via,
         id,
       ],
     });
     const r = await this.db.execute({ sql: `SELECT * FROM attendance WHERE id = ?`, args: [id] });
     const row = r.rows[0];
-    return row ? this.mapAttendance(row) as any : undefined;
+    const updated = row ? this.mapAttendance(row) as any : undefined;
+    
+    // Auto-sync to Turso (non-blocking)
+    if (updated) {
+      syncToTurso("attendance", id).catch(err => 
+        console.error("Failed to auto-sync updated attendance to Turso:", err)
+      );
+    }
+    
+    return updated;
   }
 
   async deleteAttendance(id: string): Promise<boolean> {
     const r = await this.db.execute({ sql: `DELETE FROM attendance WHERE id = ?`, args: [id] });
-    return (r.rowsAffected ?? 0) > 0;
+    const deleted = (r.rowsAffected ?? 0) > 0;
+    
+    // Auto-sync deletion to Turso (non-blocking)
+    if (deleted) {
+      syncToTurso("attendance", id).catch(err => 
+        console.error("Failed to auto-sync attendance deletion to Turso:", err)
+      );
+    }
+    
+    return deleted;
   }
 
   // Settings - simple key-value storage
@@ -579,6 +692,12 @@ export class TursoStorage implements IStorage {
       });
       const created = await this.getPlan(id);
       if (!created) throw new Error("Failed to retrieve created plan");
+      
+      // Auto-sync to Turso (non-blocking)
+      syncToTurso("plans", id).catch(err => 
+        console.error("Failed to auto-sync new plan to Turso:", err)
+      );
+      
       return created;
     } catch (error) {
       console.error("createPlan error:", error);
@@ -621,7 +740,16 @@ export class TursoStorage implements IStorage {
       sql: `UPDATE plans SET ${updates.join(", ")} WHERE id = ?`,
       args,
     });
-    return await this.getPlan(id);
+    const updated = await this.getPlan(id);
+    
+    // Auto-sync to Turso (non-blocking)
+    if (updated) {
+      syncToTurso("plans", id).catch(err => 
+        console.error("Failed to auto-sync updated plan to Turso:", err)
+      );
+    }
+    
+    return updated;
   }
 
   async deletePlan(id: string): Promise<boolean> {
@@ -629,7 +757,16 @@ export class TursoStorage implements IStorage {
       sql: `DELETE FROM plans WHERE id = ?`,
       args: [id],
     });
-    return (result.rowsAffected ?? 0) > 0;
+    const deleted = (result.rowsAffected ?? 0) > 0;
+    
+    // Auto-sync deletion to Turso (non-blocking)
+    if (deleted) {
+      syncToTurso("plans", id).catch(err => 
+        console.error("Failed to auto-sync plan deletion to Turso:", err)
+      );
+    }
+    
+    return deleted;
   }
 }
 

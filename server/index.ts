@@ -1,9 +1,10 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
+import { serveStatic, log } from "./vite";
 import { initWhatsApp } from "./whatsapp";
 import { initGoogleSheets } from "./google-sheets";
+import { startBackgroundSync } from "./auto-sync";
 
 const app = express();
 
@@ -70,6 +71,18 @@ app.use((req, res, next) => {
     // Continue server startup even if Google Sheets fails
   }
 
+  // Start automatic background sync (desktop mode only)
+  const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
+  if (desktop) {
+    try {
+      startBackgroundSync();
+      log("Automatic background sync service started");
+    } catch (error) {
+      console.error("Failed to start background sync:", error);
+      // Continue server startup even if sync fails
+    }
+  }
+
   // Register routes first
   await registerRoutes(app);
 
@@ -89,8 +102,12 @@ app.use((req, res, next) => {
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
-  const isDev = process.env.NODE_ENV !== "production";
+  // For desktop/Electron builds, force production unless explicitly debugging
+  const isDesktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
+  const isDev = !isDesktop && process.env.NODE_ENV !== "production" || process.env.DESKTOP_DEBUG === "1";
   if (isDev) {
+    // Dynamic import to avoid bundling vite in production
+    const { setupVite } = await import("./vite");
     await setupVite(app, server);
   } else {
     serveStatic(app);

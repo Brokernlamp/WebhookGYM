@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Building2, Clock, DollarSign, Users, Save, Key, RefreshCw } from "lucide-react";
+import { Building2, Clock, DollarSign, Users, Save, Key, RefreshCw, Fingerprint, CheckCircle2, XCircle, Database, Download, Upload, ArrowLeftRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, getQueryFn, queryClient } from "@/lib/queryClient";
@@ -49,6 +49,36 @@ export default function Settings() {
     taxRate: "18",
   });
 
+  const [biometricSettings, setBiometricSettings] = useState({
+    ip: "",
+    port: "4370",
+    commKey: "",
+    unlockSeconds: "3",
+    relayType: "NO",
+  });
+
+  const [databaseSyncSettings, setDatabaseSyncSettings] = useState({
+    tursoDatabaseUrl: "",
+    tursoAuthToken: "",
+  });
+
+  const { data: biometricSettingsData, isLoading: biometricLoading } = useQuery({
+    queryKey: ["/api/biometric/settings"],
+    queryFn: getQueryFn({ on401: "throw" }),
+  });
+
+  useEffect(() => {
+    if (biometricSettingsData && !biometricLoading) {
+      setBiometricSettings({
+        ip: biometricSettingsData.ip || "",
+        port: biometricSettingsData.port || "4370",
+        commKey: biometricSettingsData.commKey || "",
+        unlockSeconds: biometricSettingsData.unlockSeconds || "3",
+        relayType: biometricSettingsData.relayType || "NO",
+      });
+    }
+  }, [biometricSettingsData, biometricLoading]);
+
   // Load settings
   const { data: settings = {}, isLoading } = useQuery({
     queryKey: ["/api/settings"],
@@ -82,6 +112,10 @@ export default function Settings() {
         stripeKey: settings.stripeKey || "",
         taxRate: settings.taxRate || "18",
       });
+      setDatabaseSyncSettings({
+        tursoDatabaseUrl: settings.tursoDatabaseUrl || "",
+        tursoAuthToken: settings.tursoAuthToken || "",
+      });
     }
   }, [settings, isLoading]);
 
@@ -104,6 +138,8 @@ export default function Settings() {
         razorpayKey: paymentSettings.razorpayKey,
         stripeKey: paymentSettings.stripeKey,
         taxRate: paymentSettings.taxRate,
+        tursoDatabaseUrl: databaseSyncSettings.tursoDatabaseUrl,
+        tursoAuthToken: databaseSyncSettings.tursoAuthToken,
       });
     },
     onSuccess: async () => {
@@ -117,6 +153,116 @@ export default function Settings() {
       toast({
         title: "Error",
         description: "Failed to save settings. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const saveBiometricSettings = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", "/api/biometric/settings", biometricSettings);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/biometric/settings"] });
+      toast({
+        title: "Biometric settings saved",
+        description: "Biometric device settings have been saved successfully.",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to save biometric settings. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const syncPull = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/sync/pull", {});
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Sync successful",
+        description: `Pulled ${Object.values(data.counts || {}).reduce((a: number, b: number) => a + b, 0)} records from online database.`,
+      });
+      queryClient.invalidateQueries();
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Sync failed",
+        description: error?.message || "Failed to sync from online database. Check your credentials.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const syncPush = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/sync/push", {});
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Sync successful",
+        description: `Pushed ${Object.values(data.counts || {}).reduce((a: number, b: number) => a + b, 0)} records to online database.`,
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Sync failed",
+        description: error?.message || "Failed to sync to online database. Check your credentials.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const syncFull = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/sync/full", {});
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Sync successful",
+        description: `Bidirectional sync completed. Merged ${Object.values(data.counts || {}).reduce((a: number, b: number) => a + b, 0)} records.`,
+      });
+      queryClient.invalidateQueries();
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Sync failed",
+        description: error?.message || "Failed to perform bidirectional sync. Check your credentials.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const testBiometricConnection = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/biometric/test-connection", {});
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.connected) {
+        toast({
+          title: "Connection successful",
+          description: `Successfully connected to device at ${biometricSettings.ip}:${biometricSettings.port}`,
+        });
+      } else {
+        toast({
+          title: "Connection failed",
+          description: data.error || "Could not connect to biometric device",
+          variant: "destructive",
+        });
+      }
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Connection failed",
+        description: error?.message || "Could not connect to biometric device",
         variant: "destructive",
       });
     },
@@ -428,6 +574,256 @@ export default function Settings() {
                 <div className="text-sm text-muted-foreground">{role.count} users</div>
               </div>
             ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Fingerprint className="h-5 w-5" />
+            <CardTitle>Biometric Device Settings</CardTitle>
+          </div>
+          <CardDescription>Configure your eSSL K30 Pro biometric fingerprint attendance machine</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="biometric-ip">Device IP Address</Label>
+              <Input
+                id="biometric-ip"
+                placeholder="192.168.1.100"
+                value={biometricSettings.ip}
+                onChange={(e) =>
+                  setBiometricSettings({ ...biometricSettings, ip: e.target.value })
+                }
+                data-testid="input-biometric-ip"
+              />
+              <p className="text-xs text-muted-foreground">
+                IP address of the biometric device (find in device Menu → Comm/Network → TCP/IP)
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="biometric-port">Port</Label>
+              <Input
+                id="biometric-port"
+                placeholder="4370"
+                value={biometricSettings.port}
+                onChange={(e) =>
+                  setBiometricSettings({ ...biometricSettings, port: e.target.value })
+                }
+                data-testid="input-biometric-port"
+              />
+              <p className="text-xs text-muted-foreground">Default: 4370</p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="biometric-comm-key">Comm Key / Device Password</Label>
+            <Input
+              id="biometric-comm-key"
+              type="password"
+              placeholder="0 (default) or your device password"
+              value={biometricSettings.commKey}
+              onChange={(e) =>
+                setBiometricSettings({ ...biometricSettings, commKey: e.target.value })
+              }
+              data-testid="input-biometric-comm-key"
+            />
+            <p className="text-xs text-muted-foreground">
+              Communication key/password (find in device Menu → Comm → Comm Key). Leave empty if not set.
+            </p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="biometric-unlock-seconds">Door Unlock Duration (seconds)</Label>
+              <Input
+                id="biometric-unlock-seconds"
+                type="number"
+                placeholder="3"
+                value={biometricSettings.unlockSeconds}
+                onChange={(e) =>
+                  setBiometricSettings({ ...biometricSettings, unlockSeconds: e.target.value })
+                }
+                data-testid="input-biometric-unlock-seconds"
+              />
+              <p className="text-xs text-muted-foreground">How long the door should stay unlocked (default: 3 seconds)</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="biometric-relay-type">Relay Type</Label>
+              <Select
+                value={biometricSettings.relayType}
+                onValueChange={(value) =>
+                  setBiometricSettings({ ...biometricSettings, relayType: value })
+                }
+              >
+                <SelectTrigger id="biometric-relay-type" data-testid="select-biometric-relay-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="NO">Normally Open (NO)</SelectItem>
+                  <SelectItem value="NC">Normally Closed (NC)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Door relay wiring type (NO = Normally Open, NC = Normally Closed)</p>
+            </div>
+          </div>
+          <Separator />
+          <div className="flex gap-2">
+            <Button
+              onClick={() => saveBiometricSettings.mutate()}
+              disabled={saveBiometricSettings.isPending}
+              variant="default"
+            >
+              {saveBiometricSettings.isPending ? (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Save className="h-4 w-4 mr-2" />
+                  Save Biometric Settings
+                </>
+              )}
+            </Button>
+            <Button
+              onClick={() => testBiometricConnection.mutate()}
+              disabled={testBiometricConnection.isPending || !biometricSettings.ip}
+              variant="outline"
+            >
+              {testBiometricConnection.isPending ? (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  Testing...
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="h-4 w-4 mr-2" />
+                  Test Connection
+                </>
+              )}
+            </Button>
+          </div>
+          <div className="p-4 bg-muted rounded-md">
+            <p className="text-sm font-medium mb-2">Access Control Rules:</p>
+            <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
+              <li>Member status must be "active"</li>
+              <li>Current date must be within membership start and expiry dates</li>
+              <li>Payment status must not be "pending" or "overdue"</li>
+              <li>If all conditions are met, door will unlock automatically</li>
+            </ul>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Database className="h-5 w-5" />
+            <CardTitle>Database Sync (Online/Offline)</CardTitle>
+          </div>
+          <CardDescription>
+            Configure sync between desktop app and web app. Both use the same Turso database.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="turso-database-url">Turso Database URL</Label>
+            <Input
+              id="turso-database-url"
+              placeholder="libsql://your-database.aws-ap-south-1.turso.io"
+              value={databaseSyncSettings.tursoDatabaseUrl}
+              onChange={(e) =>
+                setDatabaseSyncSettings({ ...databaseSyncSettings, tursoDatabaseUrl: e.target.value })
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Your Turso database URL (from Turso dashboard). Example: libsql://gym-management.aws-ap-south-1.turso.io
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="turso-auth-token">Turso Auth Token</Label>
+            <Input
+              id="turso-auth-token"
+              type="password"
+              placeholder="eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..."
+              value={databaseSyncSettings.tursoAuthToken}
+              onChange={(e) =>
+                setDatabaseSyncSettings({ ...databaseSyncSettings, tursoAuthToken: e.target.value })
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Your Turso authentication token (from Turso dashboard). Keep this secure!
+            </p>
+          </div>
+          <Separator />
+          <div className="space-y-3">
+            <p className="text-sm font-medium">Sync Operations</p>
+            <div className="grid gap-2 md:grid-cols-3">
+              <Button
+                onClick={() => syncPull.mutate()}
+                disabled={syncPull.isPending || !databaseSyncSettings.tursoDatabaseUrl || !databaseSyncSettings.tursoAuthToken}
+                variant="outline"
+                className="w-full"
+              >
+                {syncPull.isPending ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                    Syncing...
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-4 w-4 mr-2" />
+                    Pull from Online
+                  </>
+                )}
+              </Button>
+              <Button
+                onClick={() => syncPush.mutate()}
+                disabled={syncPush.isPending || !databaseSyncSettings.tursoDatabaseUrl || !databaseSyncSettings.tursoAuthToken}
+                variant="outline"
+                className="w-full"
+              >
+                {syncPush.isPending ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                    Syncing...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4 mr-2" />
+                    Push to Online
+                  </>
+                )}
+              </Button>
+              <Button
+                onClick={() => syncFull.mutate()}
+                disabled={syncFull.isPending || !databaseSyncSettings.tursoDatabaseUrl || !databaseSyncSettings.tursoAuthToken}
+                variant="default"
+                className="w-full"
+              >
+                {syncFull.isPending ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                    Syncing...
+                  </>
+                ) : (
+                  <>
+                    <ArrowLeftRight className="h-4 w-4 mr-2" />
+                    Full Sync
+                  </>
+                )}
+              </Button>
+            </div>
+            <div className="p-4 bg-muted rounded-md">
+              <p className="text-sm font-medium mb-2">How Sync Works:</p>
+              <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
+                <li><strong>Pull from Online:</strong> Downloads data from web app (Turso) to desktop app</li>
+                <li><strong>Push to Online:</strong> Uploads data from desktop app to web app (Turso)</li>
+                <li><strong>Full Sync:</strong> Merges both databases (Turso takes precedence on conflicts)</li>
+                <li>Desktop app works offline. Sync when you need to share data with web app.</li>
+              </ul>
+            </div>
           </div>
         </CardContent>
       </Card>

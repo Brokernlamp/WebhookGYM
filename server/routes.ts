@@ -438,11 +438,18 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
   app.post("/api/sync/pull", async (_req: Request, res: Response) => {
     try {
       const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
-      const hasTurso = !!process.env.TURSO_DATABASE_URL && !!process.env.TURSO_AUTH_TOKEN;
       if (!desktop) return res.status(400).json({ message: "Not running in desktop mode" });
-      if (!hasTurso) return res.status(400).json({ message: "Missing Turso credentials" });
 
-      const turso = getTursoDb();
+      // Get credentials from settings or env
+      const settings = await storage.getSettings();
+      const tursoUrl = settings.tursoDatabaseUrl || process.env.TURSO_DATABASE_URL?.trim();
+      const tursoToken = settings.tursoAuthToken || process.env.TURSO_AUTH_TOKEN?.trim();
+      
+      if (!tursoUrl || !tursoToken) {
+        return res.status(400).json({ message: "Missing Turso credentials. Configure them in Settings → Database Sync." });
+      }
+
+      const turso = getTursoDb(tursoUrl, tursoToken);
       const local = getLocalDb();
 
       const tables = ["members", "payments", "attendance", "plans", "trainers", "equipment", "classes"]; 
@@ -464,6 +471,127 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
       }
 
       return jsonOk(res, { ok: true, tables: tables.length, counts: Object.fromEntries(tables.map(t => [t, data[t].length])) });
+    } catch (err: any) {
+      return res.status(500).json({ message: err?.message || "Sync failed" });
+    }
+  });
+
+  // Sync: push from local to Turso (desktop)
+  app.post("/api/sync/push", async (_req: Request, res: Response) => {
+    try {
+      const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
+      if (!desktop) return res.status(400).json({ message: "Not running in desktop mode" });
+
+      // Get credentials from settings or env
+      const settings = await storage.getSettings();
+      const tursoUrl = settings.tursoDatabaseUrl || process.env.TURSO_DATABASE_URL?.trim();
+      const tursoToken = settings.tursoAuthToken || process.env.TURSO_AUTH_TOKEN?.trim();
+      
+      if (!tursoUrl || !tursoToken) {
+        return res.status(400).json({ message: "Missing Turso credentials. Configure them in Settings → Database Sync." });
+      }
+
+      const turso = getTursoDb(tursoUrl, tursoToken);
+      const local = getLocalDb();
+
+      const tables = ["members", "payments", "attendance", "plans", "trainers", "equipment", "classes"]; 
+      
+      // Fetch all from local
+      const localData: Record<string, any[]> = {};
+      for (const t of tables) {
+        const r = await local.execute({ sql: `SELECT * FROM ${t}`, args: [] });
+        localData[t] = (r.rows as any[]) || [];
+      }
+
+      // Replace Turso tables with local content
+      for (const t of tables) {
+        await turso.execute({ sql: `DELETE FROM ${t}`, args: [] });
+        for (const row of localData[t]) {
+          const cols = Object.keys(row);
+          const placeholders = cols.map(() => "?").join(",");
+          await turso.execute({ sql: `INSERT INTO ${t} (${cols.join(",")}) VALUES (${placeholders})`, args: cols.map((c) => (row as any)[c]) });
+        }
+      }
+
+      return jsonOk(res, { ok: true, tables: tables.length, counts: Object.fromEntries(tables.map(t => [t, localData[t].length])) });
+    } catch (err: any) {
+      return res.status(500).json({ message: err?.message || "Sync failed" });
+    }
+  });
+
+  // Sync: bidirectional sync (merge strategy - Turso wins on conflicts)
+  app.post("/api/sync/full", async (_req: Request, res: Response) => {
+    try {
+      const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
+      if (!desktop) return res.status(400).json({ message: "Not running in desktop mode" });
+
+      // Get credentials from settings or env
+      const settings = await storage.getSettings();
+      const tursoUrl = settings.tursoDatabaseUrl || process.env.TURSO_DATABASE_URL?.trim();
+      const tursoToken = settings.tursoAuthToken || process.env.TURSO_AUTH_TOKEN?.trim();
+      
+      if (!tursoUrl || !tursoToken) {
+        return res.status(400).json({ message: "Missing Turso credentials. Configure them in Settings → Database Sync." });
+      }
+
+      const turso = getTursoDb(tursoUrl, tursoToken);
+      const local = getLocalDb();
+
+      const tables = ["members", "payments", "attendance", "plans", "trainers", "equipment", "classes"]; 
+      
+      // Fetch from both
+      const tursoData: Record<string, any[]> = {};
+      const localData: Record<string, any[]> = {};
+      
+      for (const t of tables) {
+        const tursoR = await turso.execute({ sql: `SELECT * FROM ${t}`, args: [] });
+        tursoData[t] = (tursoR.rows as any[]) || [];
+        const localR = await local.execute({ sql: `SELECT * FROM ${t}`, args: [] });
+        localData[t] = (localR.rows as any[]) || [];
+      }
+
+      // Merge strategy: Create a map by ID, Turso takes precedence on conflicts
+      const merged: Record<string, any[]> = {};
+      for (const t of tables) {
+        const mergedMap = new Map();
+        // First add local data
+        for (const row of localData[t]) {
+          mergedMap.set(row.id, row);
+        }
+        // Then add Turso data (overwrites on conflict)
+        for (const row of tursoData[t]) {
+          mergedMap.set(row.id, row);
+        }
+        merged[t] = Array.from(mergedMap.values());
+      }
+
+      // Update local with merged data
+      for (const t of tables) {
+        await local.execute({ sql: `DELETE FROM ${t}`, args: [] });
+        for (const row of merged[t]) {
+          const cols = Object.keys(row);
+          const placeholders = cols.map(() => "?").join(",");
+          await local.execute({ sql: `INSERT INTO ${t} (${cols.join(",")}) VALUES (${placeholders})`, args: cols.map((c) => (row as any)[c]) });
+        }
+      }
+
+      // Update Turso with merged data
+      for (const t of tables) {
+        await turso.execute({ sql: `DELETE FROM ${t}`, args: [] });
+        for (const row of merged[t]) {
+          const cols = Object.keys(row);
+          const placeholders = cols.map(() => "?").join(",");
+          await turso.execute({ sql: `INSERT INTO ${t} (${cols.join(",")}) VALUES (${placeholders})`, args: cols.map((c) => (row as any)[c]) });
+        }
+      }
+
+      return jsonOk(res, { 
+        ok: true, 
+        tables: tables.length, 
+        counts: Object.fromEntries(tables.map(t => [t, merged[t].length])),
+        localCounts: Object.fromEntries(tables.map(t => [t, localData[t].length])),
+        tursoCounts: Object.fromEntries(tables.map(t => [t, tursoData[t].length]))
+      });
     } catch (err: any) {
       return res.status(500).json({ message: err?.message || "Sync failed" });
     }
@@ -604,6 +732,110 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 		}
 	});
 
+	// Biometric settings (stored in settings table)
+	app.get("/api/biometric/settings", async (_req: Request, res: Response) => {
+		try {
+			const s = await storage.getSettings();
+			return jsonOk(res, {
+				ip: s.biometricIp || "",
+				port: s.biometricPort || "4370",
+				commKey: s.biometricCommKey || "",
+				unlockSeconds: s.biometricUnlockSeconds || "3",
+				relayType: s.biometricRelayType || "NO",
+			});
+		} catch (err) {
+			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to get biometric settings" });
+		}
+	});
+
+	app.post("/api/biometric/test-connection", async (_req: Request, res: Response) => {
+		try {
+			const s = await storage.getSettings();
+			const ip = s.biometricIp || "";
+			const port = s.biometricPort || "4370";
+			if (!ip) return res.status(400).json({ connected: false, error: "IP address not configured" });
+			// Simple TCP connection test (for now, just validate IP format)
+			const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+			if (!ipRegex.test(ip)) {
+				return res.status(400).json({ connected: false, error: "Invalid IP address format" });
+			}
+			// TODO: Implement actual TCP connection test with device SDK
+			return jsonOk(res, { connected: true, message: "Connection settings validated (full test pending SDK integration)" });
+		} catch (err) {
+			return res.status(500).json({ connected: false, error: err instanceof Error ? err.message : "Connection test failed" });
+		}
+	});
+
+	app.get("/api/biometric/device-users", async (_req: Request, res: Response) => {
+		try {
+			const s = await storage.getSettings();
+			const ip = s.biometricIp || "";
+			if (!ip) return res.status(400).json({ users: [], error: "IP address not configured" });
+			// TODO: Implement actual device user fetch with SDK
+			// For now, return empty array - will be populated when SDK is integrated
+			return jsonOk(res, { users: [] });
+		} catch (err) {
+			return res.status(500).json({ users: [], error: err instanceof Error ? err.message : "Failed to fetch device users" });
+		}
+	});
+
+	app.post("/api/biometric/settings", async (req: Request, res: Response) => {
+		try {
+			const { ip, port, commKey, unlockSeconds, relayType } = req.body || {};
+			const updated = await storage.updateSettings({
+				biometricIp: ip ?? "",
+				biometricPort: port ?? "4370",
+				biometricCommKey: commKey ?? "",
+				biometricUnlockSeconds: unlockSeconds ?? "3",
+				biometricRelayType: relayType ?? "NO",
+			});
+			return jsonOk(res, updated);
+		} catch (err) {
+			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to save biometric settings" });
+		}
+	});
+
+	// Map a member to biometric user ID
+	app.post("/api/biometric/map-member", async (req: Request, res: Response) => {
+		try {
+			const { memberId, biometricId } = req.body || {};
+			if (!memberId || !biometricId) return res.status(400).json({ message: "memberId and biometricId are required" });
+			const updated = await storage.updateMember(memberId, { biometricId });
+			if (!updated) return res.status(404).json({ message: "Member not found" });
+			return jsonOk(res, updated);
+		} catch (err) {
+			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to map biometric" });
+		}
+	});
+
+	// Simulate a scan (for testing without device). Body: { biometricId }
+	app.post("/api/biometric/simulate-scan", async (req: Request, res: Response) => {
+		try {
+			const { biometricId } = req.body || {};
+			if (!biometricId) return res.status(400).json({ message: "biometricId is required" });
+			const all = await storage.listMembers();
+			const member = all.find((m: any) => (m as any).biometricId == biometricId);
+			if (!member) return res.status(404).json({ message: "Member not mapped" });
+			const now = new Date();
+			const startOk = !member.startDate || new Date(member.startDate) <= now;
+			const endOk = !member.expiryDate || new Date(member.expiryDate) >= now;
+			const statusOk = member.status === "active";
+			const paymentOk = member.paymentStatus !== "overdue" && member.paymentStatus !== "pending";
+			const allowed = statusOk && startOk && endOk && paymentOk;
+			// Record attendance
+			await storage.createAttendance({
+				memberId: member.id,
+				checkInTime: new Date(),
+				checkOutTime: null,
+				latitude: null as any,
+				longitude: null as any,
+				markedVia: "biometric",
+			} as any);
+			return jsonOk(res, { allowed, member: { id: member.id, name: member.name } });
+		} catch (err) {
+			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to simulate scan" });
+		}
+	});
 	app.post("/api/whatsapp/test-template", async (req: Request, res: Response, next: NextFunction) => {
 		try {
 			const { template } = req.body;

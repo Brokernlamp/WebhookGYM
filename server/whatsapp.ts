@@ -10,6 +10,7 @@ import pino from "pino";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import os from "os";
 
 // Handle both ESM (import.meta.url) and CommonJS (require.main) environments
 let __dirname: string;
@@ -27,10 +28,20 @@ try {
   __dirname = process.cwd();
 }
 
+// Get AppData directory for desktop mode (same as database)
+function getAppDataDir(): string {
+  const base = process.env.GYM_APPDATA_DIR || path.join(os.homedir(), ".gymadmindashboard");
+  if (!fs.existsSync(base)) fs.mkdirSync(base, { recursive: true });
+  return base;
+}
+
 // Session directory for storing auth state
-// Use /tmp on serverless platforms, otherwise use project directory
+// Use /tmp on serverless platforms, AppData for desktop, otherwise project directory
+const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
 const AUTH_DIR = process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME
   ? path.join("/tmp", "auth_info_baileys") // Use /tmp for serverless (Netlify, AWS Lambda)
+  : desktop
+  ? path.join(getAppDataDir(), "auth_info_baileys") // Use AppData for desktop/packaged app
   : path.join(__dirname, "..", "auth_info_baileys"); // Use project directory for local/dev
 
 // Connection state tracking

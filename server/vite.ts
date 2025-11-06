@@ -1,9 +1,7 @@
 import express, { type Express } from "express";
 import fs from "fs";
 import path from "path";
-import { createServer as createViteServer, createLogger } from "vite";
 import { type Server } from "http";
-import viteConfig from "../vite.config";
 import { nanoid } from "nanoid";
 import { fileURLToPath } from "url";
 
@@ -24,7 +22,8 @@ function getDirname(): string {
 
 const __dirname = getDirname();
 
-const viteLogger = createLogger();
+// Lazy vite logger placeholder to avoid importing vite in production
+let viteLogger: any = console;
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -38,6 +37,11 @@ export function log(message: string, source = "express") {
 }
 
 export async function setupVite(app: Express, server: Server) {
+  // Dynamically import vite and vite.config only in development
+  const { createServer: createViteServer, createLogger } = await import("vite");
+  const viteCfgModule: any = await import("../vite.config");
+  const viteConfig = (viteCfgModule && viteCfgModule.default) || viteCfgModule;
+  viteLogger = createLogger();
   const serverOptions = {
     middlewareMode: true,
     hmr: { server },
