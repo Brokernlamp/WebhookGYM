@@ -16,12 +16,14 @@ import {
 import { Search, UserPlus, Trash2, Edit } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { format } from "date-fns";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Fingerprint } from "lucide-react";
 
 export default function Members() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -31,6 +33,8 @@ export default function Members() {
   const [editMemberId, setEditMemberId] = useState<string | null>(null);
   const [extendMemberId, setExtendMemberId] = useState<string | null>(null);
   const { toast } = useToast();
+  const [linkBiometricForId, setLinkBiometricForId] = useState<string | null>(null);
+  const [biometricUserId, setBiometricUserId] = useState<string>("");
 
   const { data: members = [], isLoading, error } = useQuery({
     queryKey: ["/api/members"],
@@ -174,6 +178,21 @@ export default function Members() {
     },
   });
 
+  const linkBiometric = useMutation({
+    mutationFn: async ({ memberId, biometricId }: { memberId: string; biometricId: string }) => {
+      await apiRequest("POST", "/api/biometric/map-member", { memberId, biometricId });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/members"] });
+      setLinkBiometricForId(null);
+      setBiometricUserId("");
+      toast({ title: "Linked", description: "Biometric User ID linked successfully." });
+    },
+    onError: (error: any) => {
+      toast({ title: "Failed to link", description: error?.message || "Could not link biometric.", variant: "destructive" });
+    },
+  });
+
   const handleSendReminder = (id: string) => {
     const member = members.find((m: any) => m.id === id);
     toast({
@@ -205,6 +224,8 @@ export default function Members() {
     const matchesStatus = statusFilter === "all" || member.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
+
+  const biometricLinkedMembers = filteredMembers.filter((m: any) => !!(m.biometricId ?? m.biometric_id));
 
   const stats = {
     active: members.filter((m: any) => m.status === "active").length,
@@ -291,8 +312,17 @@ export default function Members() {
         </Select>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {filteredMembers.map((member: any) => {
+      <Tabs defaultValue="all">
+        <div className="flex items-center justify-between">
+          <TabsList>
+            <TabsTrigger value="all">All Members</TabsTrigger>
+            <TabsTrigger value="biometric">Biometric Linked</TabsTrigger>
+          </TabsList>
+        </div>
+
+        <TabsContent value="all">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {filteredMembers.map((member: any) => {
           // Safely parse dates - handle null, empty strings, and invalid dates
           const parseDate = (dateStr: any) => {
             if (!dateStr) return undefined;
@@ -304,31 +334,71 @@ export default function Members() {
             }
           };
           
-          return (
-            <MemberCard
-              key={member.id}
-              id={member.id}
-              name={member.name}
-              photoUrl={member.photoUrl}
-              planName={member.planName}
-              expiryDate={parseDate(member.expiryDate)}
-              status={member.status}
-              paymentStatus={member.paymentStatus}
-              lastCheckIn={parseDate(member.lastCheckIn)}
-              onViewProfile={handleViewProfile}
-              onSendReminder={handleSendReminder}
-              onFreeze={(id) => freezeMember.mutate(id)}
-              onExtend={(id) => setExtendMemberId(id)}
-            />
-          );
-        })}
-      </div>
+            return (
+              <MemberCard
+                key={member.id}
+                id={member.id}
+                name={member.name}
+                photoUrl={member.photoUrl}
+                planName={member.planName}
+                expiryDate={parseDate(member.expiryDate)}
+                status={member.status}
+                paymentStatus={member.paymentStatus}
+                lastCheckIn={parseDate(member.lastCheckIn)}
+                onViewProfile={handleViewProfile}
+                onSendReminder={handleSendReminder}
+                onFreeze={(id) => freezeMember.mutate(id)}
+                onExtend={(id) => setExtendMemberId(id)}
+              />
+            );
+          })}
+          </div>
+          {filteredMembers.length === 0 && (
+            <div className="text-center py-12 text-muted-foreground">
+              No members found matching your criteria
+            </div>
+          )}
+        </TabsContent>
 
-      {filteredMembers.length === 0 && (
-        <div className="text-center py-12 text-muted-foreground">
-          No members found matching your criteria
-        </div>
-      )}
+        <TabsContent value="biometric">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {biometricLinkedMembers.map((member: any) => {
+              const parseDate = (dateStr: any) => {
+                if (!dateStr) return undefined;
+                try {
+                  const date = new Date(dateStr);
+                  return isNaN(date.getTime()) ? undefined : date;
+                } catch {
+                  return undefined;
+                }
+              };
+              return (
+                <MemberCard
+                  key={member.id}
+                  id={member.id}
+                  name={member.name}
+                  photoUrl={member.photoUrl}
+                  planName={member.planName}
+                  expiryDate={parseDate(member.expiryDate)}
+                  status={member.status}
+                  paymentStatus={member.paymentStatus}
+                  lastCheckIn={parseDate(member.lastCheckIn)}
+                  onViewProfile={handleViewProfile}
+                  onSendReminder={handleSendReminder}
+                  onFreeze={(id) => freezeMember.mutate(id)}
+                  onExtend={(id) => setExtendMemberId(id)}
+                />
+              );
+            })}
+          </div>
+          {biometricLinkedMembers.length === 0 && (
+            <div className="text-center py-12 text-muted-foreground">
+              No biometric-linked members yet. Link a member from their profile.
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
@@ -523,6 +593,10 @@ export default function Members() {
                     <Edit className="h-4 w-4 mr-2" />
                     Edit
                   </Button>
+                  <Button onClick={() => { setLinkBiometricForId(viewMemberId!); setBiometricUserId(""); }}>
+                    <Fingerprint className="h-4 w-4 mr-2" />
+                    Link Biometric
+                  </Button>
                   <Button variant="destructive" onClick={() => { deleteMember.mutate(viewMemberId!); setViewMemberId(null); }} disabled={deleteMember.isPending}>
                     <Trash2 className="h-4 w-4 mr-2" />
                     Delete
@@ -531,6 +605,33 @@ export default function Members() {
               </div>
             );
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Link Biometric Dialog */}
+      <Dialog open={linkBiometricForId !== null} onOpenChange={(open) => !open && setLinkBiometricForId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Link Biometric</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">Enter the User ID from the fingerprint device (e.g., 41).</p>
+            <Input
+              placeholder="Device User ID"
+              value={biometricUserId}
+              onChange={(e) => setBiometricUserId(e.target.value)}
+              data-testid="input-biometric-user-id"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkBiometricForId(null)}>Cancel</Button>
+            <Button
+              onClick={() => linkBiometricForId && linkBiometric.mutate({ memberId: linkBiometricForId, biometricId: biometricUserId.trim() })}
+              disabled={linkBiometric.isPending || biometricUserId.trim() === ""}
+            >
+              Save
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
