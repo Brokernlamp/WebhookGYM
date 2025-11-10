@@ -65,6 +65,11 @@ export default function Attendance() {
     queryKey: ["/api/members"],
     queryFn: getQueryFn({ on401: "throw" }),
   });
+  const { data: scanLogsData = { logs: [] } } = useQuery({
+    queryKey: ["/api/biometric/scan-logs"],
+    queryFn: getQueryFn({ on401: "throw" }),
+    refetchInterval: 2000, // Refresh every 2 seconds
+  });
   const formSchema = z.object({ memberId: z.string().min(1, "Please select a member") });
   type FormValues = z.infer<typeof formSchema>;
   const form = useForm<FormValues>({ 
@@ -544,6 +549,56 @@ export default function Attendance() {
           </Form>
         </DialogContent>
       </Dialog>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Biometric Scan Logs</CardTitle>
+          <p className="text-sm text-muted-foreground">Real-time scan events from biometric device</p>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-2 max-h-[400px] overflow-y-auto">
+            {(scanLogsData.logs || []).length > 0 ? (
+              (scanLogsData.logs || []).slice(0, 50).map((log: any, index: number) => {
+                const reasonLabels: Record<string, string> = {
+                  allowed: "Allowed",
+                  unknown_user: "Unknown User",
+                  inactive: "Inactive",
+                  expired: "Expired",
+                  not_started: "Not Started",
+                  payment_pending: "Payment Pending",
+                  payment_overdue: "Payment Overdue",
+                  error: "Error",
+                };
+                return (
+                  <div
+                    key={index}
+                    className={`flex items-center justify-between p-3 border rounded-md ${
+                      log.allowed ? "bg-green-50 dark:bg-green-950" : "bg-red-50 dark:bg-red-950"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`h-2 w-2 rounded-full ${log.allowed ? "bg-green-500" : "bg-red-500"}`} />
+                      <div>
+                        <div className="font-medium">
+                          {log.memberName || `User ID: ${log.biometricId}`}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {format(new Date(log.timestamp), "MMM dd, yyyy HH:mm:ss")}
+                        </div>
+                      </div>
+                    </div>
+                    <Badge variant={log.allowed ? "default" : "destructive"}>
+                      {reasonLabels[log.reason] || log.reason}
+                    </Badge>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">No scan logs yet</div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

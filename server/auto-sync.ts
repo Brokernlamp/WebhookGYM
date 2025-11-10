@@ -126,182 +126,23 @@ async function syncRowFromTurso(
 }
 
 // Sync a single record from local to Turso (called after local changes)
-export async function syncToTurso(table: string, recordId: string): Promise<void> {
-  if (isSyncing) return; // Prevent sync loops
-  
-  const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
-  if (!desktop) return; // Only sync in desktop mode
-  
-  try {
-    // Get credentials from settings
-    const settings = await storage.getSettings();
-    const tursoUrl = settings.tursoDatabaseUrl || process.env.TURSO_DATABASE_URL?.trim();
-    const tursoToken = settings.tursoAuthToken || process.env.TURSO_AUTH_TOKEN?.trim();
-    
-    if (!tursoUrl || !tursoToken) {
-      return; // No credentials configured, skip sync
-    }
-    
-    const turso = getTursoDb(tursoUrl, tursoToken);
-    const local = getLocalDb();
-    
-    // Get the record from local
-    const result = await local.execute({ 
-      sql: `SELECT * FROM ${table} WHERE id = ?`, 
-      args: [recordId] 
-    });
-    
-    if ((result.rows as any[]).length === 0) {
-      // Record deleted, sync deletion to Turso
-      await turso.execute({ 
-        sql: `DELETE FROM ${table} WHERE id = ?`, 
-        args: [recordId] 
-      });
-    } else {
-      // Sync the record
-      await syncRowToTurso(turso, table, result.rows[0]);
-    }
-    
-    console.log(`✅ Auto-synced ${table}:${recordId} to Turso`);
-  } catch (error) {
-    console.error(`❌ Auto-sync to Turso failed for ${table}:${recordId}:`, error);
-    // Don't throw - sync failures shouldn't break the app
-  }
+export async function syncToTurso(_table: string, _recordId: string): Promise<void> {
+  // Offline-only: no-op
+  return;
 }
 
 // Background sync: Check Turso for changes and sync to local
 async function backgroundSyncFromTurso(): Promise<void> {
-  if (isSyncing) return;
-  
-  const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
-  if (!desktop) return;
-  
-  try {
-    isSyncing = true;
-    
-    // Get credentials from settings
-    const settings = await storage.getSettings();
-    const tursoUrl = settings.tursoDatabaseUrl || process.env.TURSO_DATABASE_URL?.trim();
-    const tursoToken = settings.tursoAuthToken || process.env.TURSO_AUTH_TOKEN?.trim();
-    
-    if (!tursoUrl || !tursoToken) {
-      return; // No credentials configured, skip sync
-    }
-    
-    const turso = getTursoDb(tursoUrl, tursoToken);
-    // Ensure remote schema before any syncing
-    await ensureTursoSchemaUpgrades(turso);
-    const local = getLocalDb();
-    // Ensure local schema before any syncing
-    await ensureLocalSchemaUpgrades(local);
-    
-    const tables = ["members", "payments", "attendance", "plans", "trainers", "equipment", "classes"];
-    
-    for (const table of tables) {
-      try {
-        // Get all records from Turso
-        const tursoResult = await turso.execute({ sql: `SELECT * FROM ${table}`, args: [] });
-        const tursoRows = tursoResult.rows as any[];
-        
-        // Get all records from local
-        const localResult = await local.execute({ sql: `SELECT * FROM ${table}`, args: [] });
-        const localRows = localResult.rows as any[];
-        
-        // Create maps for comparison
-        const tursoMap = new Map(tursoRows.map((r: any) => [r.id, r]));
-        const localMap = new Map(localRows.map((r: any) => [r.id, r]));
-
-        // Union of IDs
-        const ids = new Set<string>([...Array.from(tursoMap.keys()), ...Array.from(localMap.keys())]);
-
-        const parseIso = (v: any): number => {
-          if (!v) return 0;
-          const d = new Date(v);
-          return isNaN(d.getTime()) ? 0 : d.getTime();
-        };
-
-        for (const id of ids) {
-          const tursoRow = tursoMap.get(id);
-          const localRow = localMap.get(id);
-
-          // Only on one side
-          if (tursoRow && !localRow) {
-            await syncRowFromTurso(local, table, tursoRow);
-            continue;
-          }
-          if (!tursoRow && localRow) {
-            await syncRowToTurso(turso, table, localRow);
-            continue;
-          }
-
-          if (!tursoRow || !localRow) continue; // safety
-
-          const tursoDeletedAt = parseIso((tursoRow as any).deleted_at);
-          const localDeletedAt = parseIso((localRow as any).deleted_at);
-          const tursoUpdatedAt = parseIso((tursoRow as any).updated_at);
-          const localUpdatedAt = parseIso((localRow as any).updated_at);
-
-          // Deletions win by latest deleted_at
-          if (tursoDeletedAt || localDeletedAt) {
-            if (tursoDeletedAt > localDeletedAt) {
-              // Propagate delete to local
-              await syncRowFromTurso(local, table, tursoRow);
-            } else if (localDeletedAt > tursoDeletedAt) {
-              // Propagate delete to turso
-              await syncRowToTurso(turso, table, localRow);
-            }
-            continue;
-          }
-
-          // Neither deleted: pick latest updated_at
-          if (tursoUpdatedAt > localUpdatedAt) {
-            await syncRowFromTurso(local, table, tursoRow);
-          } else if (localUpdatedAt > tursoUpdatedAt) {
-            await syncRowToTurso(turso, table, localRow);
-          } else {
-            // If timestamps equal or absent but data differs, prefer local to avoid overwriting user actions
-            if (JSON.stringify(localRow) !== JSON.stringify(tursoRow)) {
-              await syncRowToTurso(turso, table, localRow);
-            }
-          }
-        }
-        
-        lastSyncTimestamp[table] = Date.now();
-      } catch (error) {
-        console.error(`Failed to background sync table ${table}:`, error);
-      }
-    }
-    
-    console.log("✅ Background sync from Turso completed");
-  } catch (error) {
-    console.error("❌ Background sync from Turso failed:", error);
-  } finally {
-    isSyncing = false;
-  }
+  // Offline-only: no-op
+  return;
 }
 
 // Start background sync service (polls Turso every 5 seconds)
 export function startBackgroundSync(): void {
-  const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
-  if (!desktop) return;
-  
-  if (syncInterval) {
-    clearInterval(syncInterval);
-  }
-  
-  backgroundSyncEnabled = true;
-  
-  // Initial sync
-  backgroundSyncFromTurso().catch(console.error);
-  
-  // Then sync every 5 seconds
-  syncInterval = setInterval(() => {
-    if (backgroundSyncEnabled) {
-      backgroundSyncFromTurso().catch(console.error);
-    }
-  }, 5000);
-  
-  console.log("🔄 Background sync service started (every 5 seconds)");
+  // Offline-only: disabled
+  if (syncInterval) { clearInterval(syncInterval); syncInterval = null; }
+  backgroundSyncEnabled = false;
+  console.log("Background sync disabled (offline-only)");
 }
 
 // Stop background sync service

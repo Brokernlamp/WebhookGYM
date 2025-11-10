@@ -4,7 +4,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./vite";
 import { initWhatsApp } from "./whatsapp";
 import { initGoogleSheets } from "./google-sheets";
-import { startBackgroundSync } from "./auto-sync";
+// Sync disabled for offline-only mode
 import { startBiometricDevicePolling } from "./biometric-device";
 
 const app = express();
@@ -72,14 +72,14 @@ app.use((req, res, next) => {
     // Continue server startup even if Google Sheets fails
   }
 
-  // Start automatic background sync (desktop mode only)
+  // Start services (desktop mode only)
   const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
   if (desktop) {
     try {
-      startBackgroundSync();
-      log("Automatic background sync service started");
+      // Background sync disabled (offline-only mode)
+      log("Background sync is disabled (offline-only mode)");
     } catch (error) {
-      console.error("Failed to start background sync:", error);
+      console.error("Background sync disabled:", error);
       // Continue server startup even if sync fails
     }
     

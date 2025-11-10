@@ -21,16 +21,27 @@ interface AttendanceLog {
   verifyMode: number; // 0 = Fingerprint, etc.
 }
 
+interface ScanLog {
+  biometricId: string;
+  memberId: string | null;
+  memberName: string | null;
+  timestamp: Date;
+  allowed: boolean;
+  reason: string; // "allowed", "unknown_user", "inactive", "expired", "payment_pending", etc.
+}
+
 let deviceConnection: net.Socket | null = null;
 let isPolling = false;
 let pollingInterval: NodeJS.Timeout | null = null;
 let lastLogTime: Date | null = null;
+let scanLogs: ScanLog[] = []; // In-memory scan log (last 1000)
 
 // eSSL Protocol Constants
 const CMD_CONNECT = 0x10000001;
 const CMD_GET_USER = 0x00000005;
 const CMD_GET_ATTENDANCE_LOG = 0x0000000D;
 const CMD_RELAY_CONTROL = 0x00140000;
+const CMD_SET_USER = 0x00000008; // Set user info including access group
 
 // Helper: Convert number to 4-byte little-endian buffer
 function intToBuffer(value: number): Buffer {
@@ -286,6 +297,93 @@ export async function pulseRelay(settings: BiometricSettings, seconds: number = 
   return await unlockDoor(settings, seconds);
 }
 
+// Set user access group on device (0 = denied, 1 = allowed)
+export async function setUserAccessGroup(settings: BiometricSettings, userId: string, allowed: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!deviceConnection || deviceConnection.destroyed) {
+      resolve(false);
+      return;
+    }
+    
+    const commKey = parseInt(settings.commKey || "0", 10);
+    const groupId = allowed ? 1 : 0; // 1 = allowed, 0 = denied
+    
+    // Build set user command with group_id
+    // Format: user_id (2 bytes) + group_id (1 byte) + name (variable) + ...
+    const userIdNum = parseInt(userId, 10);
+    const data = Buffer.alloc(4);
+    data.writeUInt16LE(userIdNum, 0);
+    data.writeUInt8(groupId, 2);
+    data.writeUInt8(0, 3); // Reserved
+    
+    const cmd = buildCommand(CMD_SET_USER, data, commKey);
+    
+    const timeout = setTimeout(() => {
+      resolve(false);
+    }, 5000);
+    
+    const dataHandler = (data: Buffer) => {
+      const response = parseResponse(data);
+      if (response && response.command === CMD_SET_USER) {
+        clearTimeout(timeout);
+        deviceConnection?.removeListener("data", dataHandler);
+        resolve(response.success);
+      }
+    };
+    
+    deviceConnection.on("data", dataHandler);
+    deviceConnection.write(cmd);
+  });
+}
+
+// Sync member access groups to device (call after linking/unlinking or status changes)
+export async function syncMemberAccessGroups(settings: BiometricSettings): Promise<void> {
+  try {
+    const members = await storage.listMembers();
+    const linkedMembers = members.filter((m: any) => !!(m.biometricId ?? m.biometric_id));
+    
+    for (const member of linkedMembers) {
+      const biometricId = (member as any).biometricId ?? (member as any).biometric_id;
+      if (!biometricId) continue;
+      
+      const now = new Date();
+      const startOk = !member.startDate || new Date(member.startDate) <= now;
+      const endOk = !member.expiryDate || new Date(member.expiryDate) >= now;
+      const statusOk = member.status === "active";
+      const paymentOk = member.paymentStatus !== "overdue" && member.paymentStatus !== "pending";
+      const allowed = statusOk && startOk && endOk && paymentOk;
+      
+      await setUserAccessGroup(settings, biometricId, allowed);
+      console.log(`✓ Synced access group for user ${biometricId}: ${allowed ? "ALLOWED" : "DENIED"}`);
+    }
+  } catch (error) {
+    console.error("Failed to sync access groups:", error);
+  }
+}
+
+// Log scan event (for attendance page display)
+function logScan(biometricId: string, member: any | null, allowed: boolean, reason: string): void {
+  const log: ScanLog = {
+    biometricId,
+    memberId: member?.id ?? null,
+    memberName: member?.name ?? null,
+    timestamp: new Date(),
+    allowed,
+    reason,
+  };
+  
+  scanLogs.push(log);
+  // Keep last 1000 logs
+  if (scanLogs.length > 1000) {
+    scanLogs.shift();
+  }
+}
+
+// Get scan logs (for API)
+export function getScanLogs(): ScanLog[] {
+  return [...scanLogs].reverse(); // Most recent first
+}
+
 // Process a scan event
 export async function processScan(biometricId: string, settings: BiometricSettings): Promise<void> {
   try {
@@ -295,6 +393,7 @@ export async function processScan(biometricId: string, settings: BiometricSettin
     
     if (!member) {
       console.log(`⚠️ Biometric scan from unknown user: ${biometricId}`);
+      logScan(biometricId, null, false, "unknown_user");
       return;
     }
     
@@ -304,7 +403,22 @@ export async function processScan(biometricId: string, settings: BiometricSettin
     const endOk = !member.expiryDate || new Date(member.expiryDate) >= now;
     const statusOk = member.status === "active";
     const paymentOk = member.paymentStatus !== "overdue" && member.paymentStatus !== "pending";
-    const allowed = statusOk && startOk && endOk && paymentOk;
+    
+    let allowed = false;
+    let reason = "allowed";
+    
+    if (!statusOk) {
+      reason = "inactive";
+    } else if (!startOk) {
+      reason = "not_started";
+    } else if (!endOk) {
+      reason = "expired";
+    } else if (!paymentOk) {
+      reason = member.paymentStatus === "pending" ? "payment_pending" : "payment_overdue";
+    } else {
+      allowed = true;
+      reason = "allowed";
+    }
     
     if (allowed) {
       // Record attendance
@@ -322,12 +436,14 @@ export async function processScan(biometricId: string, settings: BiometricSettin
       await unlockDoor(settings, unlockSeconds);
       
       console.log(`✅ Access granted: ${member.name} (${biometricId})`);
+      logScan(biometricId, member, true, reason);
     } else {
-      console.log(`❌ Access denied: ${member.name} (${biometricId})`);
-      // Could optionally log denied attempts
+      console.log(`❌ Access denied: ${member.name} (${biometricId}) - ${reason}`);
+      logScan(biometricId, member, false, reason);
     }
   } catch (error) {
     console.error(`❌ Error processing scan for ${biometricId}:`, error);
+    logScan(biometricId, null, false, "error");
   }
 }
 
@@ -405,6 +521,25 @@ export function startBiometricDevicePolling(): void {
   if (pollingInterval) {
     clearInterval(pollingInterval);
   }
+  
+  // Initial sync of access groups
+  (async () => {
+    try {
+      const settings = await storage.getSettings();
+      const ip = settings.biometricIp;
+      if (ip) {
+        await syncMemberAccessGroups({
+          ip,
+          port: settings.biometricPort || "4370",
+          commKey: settings.biometricCommKey || "0",
+          unlockSeconds: settings.biometricUnlockSeconds || "3",
+          relayType: settings.biometricRelayType || "NO"
+        });
+      }
+    } catch (err) {
+      console.error("Failed to sync access groups on startup:", err);
+    }
+  })();
   
   // Initial poll
   pollDeviceForScans().catch(console.error);

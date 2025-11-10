@@ -434,167 +434,19 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
     }
   });
 
-  // Sync: pull from Turso into local (desktop)
+  // Sync endpoints disabled (offline-only)
   app.post("/api/sync/pull", async (_req: Request, res: Response) => {
-    try {
-      const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
-      if (!desktop) return res.status(400).json({ message: "Not running in desktop mode" });
-
-      // Get credentials from settings or env
-      const settings = await storage.getSettings();
-      const tursoUrl = settings.tursoDatabaseUrl || process.env.TURSO_DATABASE_URL?.trim();
-      const tursoToken = settings.tursoAuthToken || process.env.TURSO_AUTH_TOKEN?.trim();
-      
-      if (!tursoUrl || !tursoToken) {
-        return res.status(400).json({ message: "Missing Turso credentials. Configure them in Settings → Database Sync." });
-      }
-
-      const turso = getTursoDb(tursoUrl, tursoToken);
-      const local = getLocalDb();
-
-      const tables = ["members", "payments", "attendance", "plans", "trainers", "equipment", "classes"]; 
-      // Fetch all from Turso
-      const data: Record<string, any[]> = {};
-      for (const t of tables) {
-        const r = await turso.execute({ sql: `SELECT * FROM ${t}`, args: [] });
-        data[t] = (r.rows as any[]) || [];
-      }
-
-      // Replace local tables with Turso content
-      for (const t of tables) {
-        await local.execute({ sql: `DELETE FROM ${t}`, args: [] });
-        for (const row of data[t]) {
-          const cols = Object.keys(row);
-          const placeholders = cols.map(() => "?").join(",");
-          await local.execute({ sql: `INSERT INTO ${t} (${cols.join(",")}) VALUES (${placeholders})`, args: cols.map((c) => (row as any)[c]) });
-        }
-      }
-
-      return jsonOk(res, { ok: true, tables: tables.length, counts: Object.fromEntries(tables.map(t => [t, data[t].length])) });
-    } catch (err: any) {
-      return res.status(500).json({ message: err?.message || "Sync failed" });
-    }
+    return res.status(400).json({ message: "Sync disabled: offline-only mode" });
   });
 
   // Sync: push from local to Turso (desktop)
   app.post("/api/sync/push", async (_req: Request, res: Response) => {
-    try {
-      const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
-      if (!desktop) return res.status(400).json({ message: "Not running in desktop mode" });
-
-      // Get credentials from settings or env
-      const settings = await storage.getSettings();
-      const tursoUrl = settings.tursoDatabaseUrl || process.env.TURSO_DATABASE_URL?.trim();
-      const tursoToken = settings.tursoAuthToken || process.env.TURSO_AUTH_TOKEN?.trim();
-      
-      if (!tursoUrl || !tursoToken) {
-        return res.status(400).json({ message: "Missing Turso credentials. Configure them in Settings → Database Sync." });
-      }
-
-      const turso = getTursoDb(tursoUrl, tursoToken);
-      const local = getLocalDb();
-
-      const tables = ["members", "payments", "attendance", "plans", "trainers", "equipment", "classes"]; 
-      
-      // Fetch all from local
-      const localData: Record<string, any[]> = {};
-      for (const t of tables) {
-        const r = await local.execute({ sql: `SELECT * FROM ${t}`, args: [] });
-        localData[t] = (r.rows as any[]) || [];
-      }
-
-      // Replace Turso tables with local content
-      for (const t of tables) {
-        await turso.execute({ sql: `DELETE FROM ${t}`, args: [] });
-        for (const row of localData[t]) {
-          const cols = Object.keys(row);
-          const placeholders = cols.map(() => "?").join(",");
-          await turso.execute({ sql: `INSERT INTO ${t} (${cols.join(",")}) VALUES (${placeholders})`, args: cols.map((c) => (row as any)[c]) });
-        }
-      }
-
-      return jsonOk(res, { ok: true, tables: tables.length, counts: Object.fromEntries(tables.map(t => [t, localData[t].length])) });
-    } catch (err: any) {
-      return res.status(500).json({ message: err?.message || "Sync failed" });
-    }
+    return res.status(400).json({ message: "Sync disabled: offline-only mode" });
   });
 
   // Sync: bidirectional sync (merge strategy - Turso wins on conflicts)
   app.post("/api/sync/full", async (_req: Request, res: Response) => {
-    try {
-      const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
-      if (!desktop) return res.status(400).json({ message: "Not running in desktop mode" });
-
-      // Get credentials from settings or env
-      const settings = await storage.getSettings();
-      const tursoUrl = settings.tursoDatabaseUrl || process.env.TURSO_DATABASE_URL?.trim();
-      const tursoToken = settings.tursoAuthToken || process.env.TURSO_AUTH_TOKEN?.trim();
-      
-      if (!tursoUrl || !tursoToken) {
-        return res.status(400).json({ message: "Missing Turso credentials. Configure them in Settings → Database Sync." });
-      }
-
-      const turso = getTursoDb(tursoUrl, tursoToken);
-      const local = getLocalDb();
-
-      const tables = ["members", "payments", "attendance", "plans", "trainers", "equipment", "classes"]; 
-      
-      // Fetch from both
-      const tursoData: Record<string, any[]> = {};
-      const localData: Record<string, any[]> = {};
-      
-      for (const t of tables) {
-        const tursoR = await turso.execute({ sql: `SELECT * FROM ${t}`, args: [] });
-        tursoData[t] = (tursoR.rows as any[]) || [];
-        const localR = await local.execute({ sql: `SELECT * FROM ${t}`, args: [] });
-        localData[t] = (localR.rows as any[]) || [];
-      }
-
-      // Merge strategy: Create a map by ID, Turso takes precedence on conflicts
-      const merged: Record<string, any[]> = {};
-      for (const t of tables) {
-        const mergedMap = new Map();
-        // First add local data
-        for (const row of localData[t]) {
-          mergedMap.set(row.id, row);
-        }
-        // Then add Turso data (overwrites on conflict)
-        for (const row of tursoData[t]) {
-          mergedMap.set(row.id, row);
-        }
-        merged[t] = Array.from(mergedMap.values());
-      }
-
-      // Update local with merged data
-      for (const t of tables) {
-        await local.execute({ sql: `DELETE FROM ${t}`, args: [] });
-        for (const row of merged[t]) {
-          const cols = Object.keys(row);
-          const placeholders = cols.map(() => "?").join(",");
-          await local.execute({ sql: `INSERT INTO ${t} (${cols.join(",")}) VALUES (${placeholders})`, args: cols.map((c) => (row as any)[c]) });
-        }
-      }
-
-      // Update Turso with merged data
-      for (const t of tables) {
-        await turso.execute({ sql: `DELETE FROM ${t}`, args: [] });
-        for (const row of merged[t]) {
-          const cols = Object.keys(row);
-          const placeholders = cols.map(() => "?").join(",");
-          await turso.execute({ sql: `INSERT INTO ${t} (${cols.join(",")}) VALUES (${placeholders})`, args: cols.map((c) => (row as any)[c]) });
-        }
-      }
-
-      return jsonOk(res, { 
-        ok: true, 
-        tables: tables.length, 
-        counts: Object.fromEntries(tables.map(t => [t, merged[t].length])),
-        localCounts: Object.fromEntries(tables.map(t => [t, localData[t].length])),
-        tursoCounts: Object.fromEntries(tables.map(t => [t, tursoData[t].length]))
-      });
-    } catch (err: any) {
-      return res.status(500).json({ message: err?.message || "Sync failed" });
-    }
+    return res.status(400).json({ message: "Sync disabled: offline-only mode" });
   });
 	app.post("/api/whatsapp/send-bulk", async (req: Request, res: Response, next: NextFunction) => {
 		try {
@@ -835,12 +687,41 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 	app.post("/api/biometric/map-member", async (req: Request, res: Response) => {
 		try {
 			const { memberId, biometricId } = req.body || {};
+			console.log("Map biometric requested", { memberId, biometricId });
 			if (!memberId || !biometricId) return res.status(400).json({ message: "memberId and biometricId are required" });
 			const updated = await storage.updateMember(memberId, { biometricId });
 			if (!updated) return res.status(404).json({ message: "Member not found" });
+			console.log("Map biometric saved", { memberId, biometricId, updatedBiometricId: (updated as any).biometricId });
+			
+			// Sync access group to device
+			try {
+				const s = await storage.getSettings();
+				const { syncMemberAccessGroups } = await import("./biometric-device");
+				await syncMemberAccessGroups({
+					ip: s.biometricIp || "",
+					port: s.biometricPort || "4370",
+					commKey: s.biometricCommKey || "0",
+					unlockSeconds: s.biometricUnlockSeconds || "3",
+					relayType: s.biometricRelayType || "NO"
+				});
+			} catch (syncErr) {
+				console.error("Failed to sync access groups:", syncErr);
+			}
+			
 			return jsonOk(res, updated);
 		} catch (err) {
 			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to map biometric" });
+		}
+	});
+
+	// Get scan logs (for attendance page)
+	app.get("/api/biometric/scan-logs", async (_req: Request, res: Response) => {
+		try {
+			const { getScanLogs } = await import("./biometric-device");
+			const logs = getScanLogs();
+			return jsonOk(res, { logs });
+		} catch (err) {
+			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to get scan logs" });
 		}
 	});
 
