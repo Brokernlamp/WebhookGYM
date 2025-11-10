@@ -97,7 +97,8 @@ export default function Attendance() {
   });
   const syncNow = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", "/api/biometric/sync-now");
+      const response = await apiRequest("POST", "/api/biometric/sync-now");
+      return response;
     },
     onSuccess: async (data: any) => {
       await queryClient.invalidateQueries({ queryKey: ["/api/biometric/scan-logs"] });
@@ -106,13 +107,14 @@ export default function Attendance() {
       await queryClient.refetchQueries({ queryKey: ["/api/attendance"] });
       toast({
         title: "Sync completed",
-        description: data.message || "Fetched logs from device",
+        description: (data && data.message) ? data.message : `Fetched ${data?.logsCount || 0} log(s) from device`,
       });
     },
     onError: (err: any) => {
+      const errorMessage = err?.message || err?.toString() || "Failed to sync with device";
       toast({
         title: "Sync failed",
-        description: err.message || "Failed to sync with device",
+        description: errorMessage,
         variant: "destructive",
       });
     },

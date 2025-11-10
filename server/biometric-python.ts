@@ -146,7 +146,10 @@ export function startLiveScanMonitoring(
           try {
             const event = JSON.parse(line);
             if (event.type === "scan") {
-              onScan(event.userId, new Date(event.timestamp));
+              // Normalize userId to string
+              const normalizedUserId = String(event.userId || event.user_id || "").trim();
+              console.log(`🐍 Python live capture: User ID "${normalizedUserId}" scanned`);
+              onScan(normalizedUserId, new Date(event.timestamp));
             } else if (event.type === "error") {
               onError(new Error(event.error));
             }

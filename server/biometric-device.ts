@@ -390,13 +390,15 @@ export async function syncMemberAccessGroups(settings: BiometricSettings): Promi
 // Log scan event (for attendance page display)
 function logScan(biometricId: string, member: any | null, allowed: boolean, reason: string): void {
   const log: ScanLog = {
-    biometricId,
+    biometricId: String(biometricId), // Ensure it's always a string
     memberId: member?.id ?? null,
     memberName: member?.name ?? null,
     timestamp: new Date(),
     allowed,
     reason,
   };
+  
+  console.log(`📝 Logging scan: User ID="${log.biometricId}", Member="${log.memberName || 'N/A'}", Allowed=${allowed}, Reason=${reason}`);
   
   scanLogs.push(log);
   // Keep last 1000 logs
@@ -411,26 +413,43 @@ export function getScanLogs(): ScanLog[] {
 }
 
 // Process a scan event
-export async function processScan(biometricId: string, settings: BiometricSettings): Promise<void> {
+export async function processScan(biometricId: string | number, settings: BiometricSettings): Promise<void> {
+  // Normalize to string for consistent comparison (outside try so catch can use it)
+  const normalizedId = String(biometricId).trim();
+  
   try {
-    console.log(`🔍 Processing scan for biometric ID: ${biometricId}`);
+    console.log(`🔍 Processing scan for biometric ID: "${normalizedId}" (original: ${biometricId}, type: ${typeof biometricId})`);
     
     // Find member by biometric ID
     const allMembers = await storage.listMembers();
-    console.log(`📋 Checking ${allMembers.length} members for biometric ID ${biometricId}`);
+    console.log(`📋 Checking ${allMembers.length} members for biometric ID "${normalizedId}"`);
+    
+    // Log all members with biometric IDs for debugging
+    const membersWithBio = allMembers.filter((m: any) => (m as any).biometricId);
+    console.log(`📊 Members with biometric IDs: ${membersWithBio.length}`);
+    membersWithBio.forEach((m: any) => {
+      const mBioId = String((m as any).biometricId).trim();
+      console.log(`  - Member "${m.name}": biometricId="${mBioId}" (type: ${typeof (m as any).biometricId})`);
+    });
     
     const member = allMembers.find((m: any) => {
       const mBioId = (m as any).biometricId;
-      const match = mBioId === biometricId || mBioId == biometricId;
-      if (mBioId) {
-        console.log(`  - Member ${m.name}: biometricId="${mBioId}" (type: ${typeof mBioId}) vs scan="${biometricId}" (type: ${typeof biometricId}) -> ${match ? "✅ MATCH" : "❌"}`);
+      if (!mBioId) return false;
+      
+      // Normalize both to strings for comparison
+      const normalizedMemberId = String(mBioId).trim();
+      const match = normalizedMemberId === normalizedId || normalizedMemberId == normalizedId;
+      
+      if (match) {
+        console.log(`  ✅ MATCH FOUND: Member "${m.name}" - biometricId="${normalizedMemberId}" matches scan="${normalizedId}"`);
       }
       return match;
     });
     
     if (!member) {
-      console.log(`⚠️ Biometric scan from unknown user: ${biometricId}`);
-      logScan(biometricId, null, false, "unknown_user");
+      console.log(`⚠️ Biometric scan from unknown user: "${normalizedId}"`);
+      console.log(`   Available biometric IDs in system: ${membersWithBio.map((m: any) => String((m as any).biometricId)).join(", ") || "NONE"}`);
+      logScan(normalizedId, null, false, "unknown_user");
       return;
     }
     
@@ -483,15 +502,15 @@ export async function processScan(biometricId: string, settings: BiometricSettin
         await unlockDoor(settings, unlockSeconds);
       }
       
-      console.log(`✅ Access granted: ${member.name} (${biometricId})`);
-      logScan(biometricId, member, true, reason);
+      console.log(`✅ Access granted: ${member.name} (${normalizedId})`);
+      logScan(normalizedId, member, true, reason);
     } else {
-      console.log(`❌ Access denied: ${member.name} (${biometricId}) - ${reason}`);
-      logScan(biometricId, member, false, reason);
+      console.log(`❌ Access denied: ${member.name} (${normalizedId}) - ${reason}`);
+      logScan(normalizedId, member, false, reason);
     }
   } catch (error) {
-    console.error(`❌ Error processing scan for ${biometricId}:`, error);
-    logScan(biometricId, null, false, "error");
+    console.error(`❌ Error processing scan for ${normalizedId}:`, error);
+    logScan(normalizedId, null, false, "error");
   }
 }
 

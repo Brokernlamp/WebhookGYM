@@ -708,6 +708,16 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 				biometricUnlockSeconds: unlockSeconds ?? "3",
 				biometricRelayType: relayType ?? "NO",
 			});
+			
+			// Restart polling with new settings
+			try {
+				const { startBiometricDevicePolling } = await import("./biometric-device");
+				startBiometricDevicePolling();
+				console.log("🔄 Restarted biometric device polling after settings update");
+			} catch (pollErr) {
+				console.error("Failed to restart polling:", pollErr);
+			}
+			
 			return jsonOk(res, updated);
 		} catch (err) {
 			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to save biometric settings" });
@@ -753,6 +763,30 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 			return jsonOk(res, { logs });
 		} catch (err) {
 			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to get scan logs" });
+		}
+	});
+
+	// Debug: Get all members with biometric IDs
+	app.get("/api/biometric/debug-members", async (_req: Request, res: Response) => {
+		try {
+			const members = await storage.listMembers();
+			const membersWithBio = members
+				.filter((m: any) => (m as any).biometricId)
+				.map((m: any) => ({
+					id: m.id,
+					name: m.name,
+					biometricId: String((m as any).biometricId),
+					biometricIdType: typeof (m as any).biometricId,
+					status: m.status,
+				}));
+			
+			return jsonOk(res, { 
+				totalMembers: members.length,
+				membersWithBiometric: membersWithBio.length,
+				members: membersWithBio 
+			});
+		} catch (err) {
+			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to get members" });
 		}
 	});
 
