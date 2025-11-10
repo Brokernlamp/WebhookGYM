@@ -769,6 +769,79 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 		}
 	});
 
+	// Receive attendance event from standalone Python service
+	app.post("/api/biometric/attendance-event", async (req: Request, res: Response) => {
+		try {
+			const { biometricId, memberId, memberName, allowed, reason, timestamp } = req.body || {};
+			
+			if (!biometricId) {
+				return res.status(400).json({ message: "biometricId is required" });
+			}
+			
+			console.log(`📥 Attendance event from Python: User ${biometricId}, Allowed: ${allowed}, Reason: ${reason}`);
+			
+			// If member exists and access was allowed, create attendance record
+			if (allowed && memberId) {
+				try {
+					await storage.createAttendance({
+						memberId,
+						checkInTime: timestamp ? new Date(timestamp) : new Date(),
+						checkOutTime: null,
+						latitude: null as any,
+						longitude: null as any,
+						markedVia: "biometric",
+					} as any);
+					console.log(`✅ Attendance recorded for member ${memberId}`);
+				} catch (attErr) {
+					console.error("Failed to create attendance:", attErr);
+				}
+			}
+			
+			// Log the scan event
+			try {
+				const { logScan } = await import("./biometric-device");
+				const member = memberId ? await storage.getMember(memberId) : null;
+				logScan(
+					biometricId,
+					member || null,
+					allowed || false,
+					reason || "unknown"
+				);
+			} catch (logErr) {
+				console.error("Failed to log scan:", logErr);
+			}
+			
+			return jsonOk(res, { 
+				success: true,
+				message: allowed ? "Attendance recorded" : "Access denied logged"
+			});
+		} catch (err) {
+			console.error("Error processing attendance event:", err);
+			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to process attendance event" });
+		}
+	});
+
+	// Get monitoring status
+	app.get("/api/biometric/status", async (_req: Request, res: Response) => {
+		try {
+			const settings = await storage.getSettings();
+			const ip = settings.biometricIp;
+			
+			const { isPythonBridgeAvailable } = await import("./biometric-python");
+			const pythonAvailable = await isPythonBridgeAvailable();
+			
+			return jsonOk(res, {
+				configured: !!ip,
+				ip: ip || null,
+				pythonAvailable,
+				monitoringMethod: pythonAvailable ? "Python live_capture" : "Native polling",
+				scanLogsCount: (await import("./biometric-device")).getScanLogs().length,
+			});
+		} catch (err) {
+			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to get status" });
+		}
+	});
+
 	// Debug: Get all members with biometric IDs
 	app.get("/api/biometric/debug-members", async (_req: Request, res: Response) => {
 		try {

@@ -389,7 +389,7 @@ export async function syncMemberAccessGroups(settings: BiometricSettings): Promi
 }
 
 // Log scan event (for attendance page display)
-function logScan(biometricId: string, member: any | null, allowed: boolean, reason: string): void {
+export function logScan(biometricId: string, member: any | null, allowed: boolean, reason: string): void {
   const log: ScanLog = {
     biometricId: String(biometricId), // Ensure it's always a string
     memberId: member?.id ?? null,

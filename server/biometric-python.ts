@@ -2,6 +2,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { storage } from "./storage";
 import path from "path";
+import fs from "fs";
 
 const execFileAsync = promisify(execFile);
 
@@ -15,6 +16,12 @@ interface BiometricSettings {
 
 // Get script path - relative to server directory
 const PYTHON_SCRIPT = path.join(process.cwd(), "server", "biometric-python-bridge.py");
+
+// Verify script exists on module load
+if (!fs.existsSync(PYTHON_SCRIPT)) {
+  console.warn(`⚠️ Python script not found at: ${PYTHON_SCRIPT}`);
+  console.warn(`   Current working directory: ${process.cwd()}`);
+}
 
 // Check if Python is available
 async function checkPython(): Promise<boolean> {
@@ -136,6 +143,13 @@ export function startLiveScanMonitoring(
     try {
       const pythonCmd = await getPythonCmd();
       console.log(`🐍 Starting Python biometric monitoring process...`);
+      console.log(`   Command: ${pythonCmd}`);
+      console.log(`   Script: ${PYTHON_SCRIPT}`);
+      console.log(`   Args: monitor_scans ${settings.ip} ${settings.port} ${settings.commKey || "0"} ${settings.unlockSeconds || "3"}`);
+      
+      if (!fs.existsSync(PYTHON_SCRIPT)) {
+        throw new Error(`Python script not found at: ${PYTHON_SCRIPT}`);
+      }
       
       pythonProcess = execFile(pythonCmd, [
         PYTHON_SCRIPT,
@@ -173,9 +187,9 @@ export function startLiveScanMonitoring(
       
       pythonProcess.stderr?.on("data", (data: Buffer) => {
         const output = data.toString();
-        // Only log if it's not empty and not a JSON parse error
-        if (output.trim() && !output.includes("JSON")) {
-          console.error("Python stderr:", output);
+        // Log all stderr for debugging (Python errors, warnings, etc.)
+        if (output.trim()) {
+          console.error("🐍 Python stderr:", output.trim());
         }
       });
       
