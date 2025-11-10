@@ -35,6 +35,7 @@ let isPolling = false;
 let pollingInterval: NodeJS.Timeout | null = null;
 let lastLogTime: Date | null = null;
 let scanLogs: ScanLog[] = []; // In-memory scan log (last 1000)
+let pythonMonitor: { process: any; stop: () => void } | null = null; // Python live capture monitor
 
 // eSSL Protocol Constants
 const CMD_CONNECT = 0x10000001;
@@ -622,7 +623,7 @@ export function startBiometricDevicePolling(): void {
         const settings = await storage.getSettings();
         const ip = settings.biometricIp;
         if (ip) {
-          const monitor = startLiveScanMonitoring(
+          pythonMonitor = startLiveScanMonitoring(
             {
               ip,
               port: settings.biometricPort || "4370",
@@ -672,6 +673,12 @@ export function startBiometricDevicePolling(): void {
 
 // Stop polling
 export function stopBiometricDevicePolling(): void {
+  // Stop Python monitor if running
+  if (pythonMonitor) {
+    pythonMonitor.stop();
+    pythonMonitor = null;
+  }
+  
   if (pollingInterval) {
     clearInterval(pollingInterval);
     pollingInterval = null;

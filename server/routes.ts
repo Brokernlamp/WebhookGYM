@@ -711,9 +711,12 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 			
 			// Restart polling with new settings
 			try {
-				const { startBiometricDevicePolling } = await import("./biometric-device");
-				startBiometricDevicePolling();
-				console.log("🔄 Restarted biometric device polling after settings update");
+				const { startBiometricDevicePolling, stopBiometricDevicePolling } = await import("./biometric-device");
+				stopBiometricDevicePolling(); // Stop old monitoring first
+				setTimeout(() => {
+					startBiometricDevicePolling(); // Start with new settings
+					console.log("🔄 Restarted biometric device polling after settings update");
+				}, 500); // Small delay to ensure cleanup
 			} catch (pollErr) {
 				console.error("Failed to restart polling:", pollErr);
 			}

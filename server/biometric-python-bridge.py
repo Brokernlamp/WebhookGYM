@@ -56,47 +56,76 @@ def sync_access_groups(ip, port, comm_key, members_json):
         return {"success": False, "error": str(e)}
 
 def monitor_scans(ip, port, comm_key, unlock_seconds):
-    """Monitor scans in real-time (live capture)"""
+    """Monitor scans in real-time (live capture) with auto-reconnect"""
     seen_events = set()
+    reconnect_delay = 2
+    max_reconnect_delay = 60
     
-    try:
-        conn = connect_device(ip, port, comm_key)
-        
-        for attendance in conn.live_capture():
-            if attendance is None:
-                continue
+    print(json.dumps({"type": "status", "message": "Starting biometric monitoring service"}), flush=True)
+    
+    while True:
+        conn = None
+        try:
+            print(json.dumps({"type": "status", "message": f"Connecting to {ip}:{port}"}), flush=True)
             
-            uid = str(getattr(attendance, "user_id", ""))
-            ts = getattr(attendance, "timestamp", None)
+            conn = connect_device(ip, port, comm_key)
             
-            if not uid:
-                continue
+            print(json.dumps({"type": "connected", "ip": ip, "port": port}), flush=True)
             
-            event_key = f"{uid}-{ts}"
-            if event_key in seen_events:
-                continue
-            seen_events.add(event_key)
-            
-            if len(seen_events) > 500:
-                oldest = list(seen_events)[0]
-                seen_events.remove(oldest)
-            
-            # Output scan event as JSON
-            print(json.dumps({
-                "type": "scan",
-                "userId": uid,
-                "timestamp": ts.isoformat() if ts else datetime.now().isoformat()
-            }), flush=True)
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        print(json.dumps({"type": "error", "error": str(e)}), flush=True)
-    finally:
-        if conn:
+            # Setup device
             try:
-                conn.disconnect()
+                conn.disable_device()
+                time.sleep(0.5)
+                conn.enable_device()
             except:
                 pass
+            
+            reconnect_delay = 2  # Reset delay on successful connection
+            
+            # Real-time monitoring
+            for attendance in conn.live_capture():
+                if attendance is None:
+                    continue
+                
+                uid = str(getattr(attendance, "user_id", ""))
+                ts = getattr(attendance, "timestamp", None)
+                
+                if not uid:
+                    continue
+                
+                event_key = f"{uid}-{ts}"
+                if event_key in seen_events:
+                    continue
+                seen_events.add(event_key)
+                
+                if len(seen_events) > 500:
+                    oldest = list(seen_events)[0]
+                    seen_events.remove(oldest)
+                
+                # Output scan event as JSON
+                print(json.dumps({
+                    "type": "scan",
+                    "userId": uid,
+                    "timestamp": ts.isoformat() if ts else datetime.now().isoformat()
+                }), flush=True)
+        
+        except KeyboardInterrupt:
+            print(json.dumps({"type": "status", "message": "Service stopped by user"}), flush=True)
+            break
+        
+        except (ZKNetworkError, ZKErrorResponse, Exception) as e:
+            error_msg = str(e)
+            print(json.dumps({"type": "error", "error": error_msg}), flush=True)
+            print(json.dumps({"type": "status", "message": f"Reconnecting in {reconnect_delay} seconds..."}), flush=True)
+            time.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+        
+        finally:
+            if conn:
+                try:
+                    conn.disconnect()
+                except:
+                    pass
 
 def unlock_door(ip, port, comm_key, seconds):
     """Unlock door relay"""
