@@ -60,6 +60,7 @@ export default function Settings() {
   const [testUserId, setTestUserId] = useState("");
   const [lastScannedId, setLastScannedId] = useState<string | null>(null);
   const [lastScanTime, setLastScanTime] = useState<Date | null>(null);
+  const [lastProcessedTimestamp, setLastProcessedTimestamp] = useState<string | null>(null);
 
   const [databaseSyncSettings, setDatabaseSyncSettings] = useState({
     tursoDatabaseUrl: "",
@@ -76,7 +77,7 @@ export default function Settings() {
     queryKey: ["/api/biometric/scan-logs"],
     queryFn: getQueryFn({ on401: "throw" }),
     refetchInterval: 1000, // Check every second
-    enabled: !!testUserId && !!biometricSettings.ip, // Only monitor if test ID is set and device is configured
+    enabled: !!biometricSettings.ip, // Monitor if device is configured
   });
 
   // Update last scanned ID when new scans arrive
@@ -84,11 +85,16 @@ export default function Settings() {
     if (scanLogsData?.logs && scanLogsData.logs.length > 0) {
       const latestLog = scanLogsData.logs[0]; // Most recent log (they're reversed)
       if (latestLog && latestLog.biometricId) {
-        setLastScannedId(latestLog.biometricId);
-        setLastScanTime(new Date(latestLog.timestamp));
+        const logTimestamp = latestLog.timestamp;
+        // Only update if this is a new scan (different timestamp)
+        if (lastProcessedTimestamp !== logTimestamp) {
+          setLastScannedId(latestLog.biometricId);
+          setLastScanTime(new Date(logTimestamp));
+          setLastProcessedTimestamp(logTimestamp);
+        }
       }
     }
-  }, [scanLogsData]);
+  }, [scanLogsData, lastProcessedTimestamp]);
 
   useEffect(() => {
     if (biometricSettingsData && !biometricLoading) {
