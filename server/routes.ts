@@ -615,28 +615,59 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 				return res.status(400).json({ connected: false, error: "Invalid IP address format" });
 			}
 			
-			// Test actual TCP connection to device
-            const { testDeviceConnection, pulseRelay } = await import("./biometric-device");
-            const connected = await testDeviceConnection({
-				ip,
-				port,
-				commKey,
-				unlockSeconds: s.biometricUnlockSeconds || "3",
-				relayType: s.biometricRelayType || "NO"
-			});
+			// Try Python bridge first, fallback to native
+			let connected = false;
+			try {
+				const { testConnectionPython, unlockDoorPython, isPythonBridgeAvailable } = await import("./biometric-python");
+				if (await isPythonBridgeAvailable()) {
+					connected = await testConnectionPython({
+						ip,
+						port,
+						commKey,
+						unlockSeconds: s.biometricUnlockSeconds || "3",
+						relayType: s.biometricRelayType || "NO"
+					});
+					if (connected) {
+						// Pulse relay via Python
+						await unlockDoorPython({
+							ip,
+							port,
+							commKey,
+							unlockSeconds: s.biometricUnlockSeconds || "3",
+							relayType: s.biometricRelayType || "NO"
+						}, 1);
+					}
+				}
+			} catch (pyErr) {
+				console.log("Python bridge not available, using native");
+			}
+			
+			if (!connected) {
+				// Fallback to native
+				const { testDeviceConnection, pulseRelay } = await import("./biometric-device");
+				connected = await testDeviceConnection({
+					ip,
+					port,
+					commKey,
+					unlockSeconds: s.biometricUnlockSeconds || "3",
+					relayType: s.biometricRelayType || "NO"
+				});
+				
+				if (connected) {
+					try {
+						await pulseRelay({
+							ip,
+							port,
+							commKey,
+							unlockSeconds: s.biometricUnlockSeconds || "3",
+							relayType: s.biometricRelayType || "NO"
+						}, 1);
+					} catch {}
+				}
+			}
 			
 			if (connected) {
-                // Briefly pulse relay (1s) to physically confirm connection
-                try {
-                  await pulseRelay({
-                    ip,
-                    port,
-                    commKey,
-                    unlockSeconds: s.biometricUnlockSeconds || "3",
-                    relayType: s.biometricRelayType || "NO"
-                  }, 1);
-                } catch {}
-                return jsonOk(res, { connected: true, message: `Successfully connected to device at ${ip}:${port}` });
+				return jsonOk(res, { connected: true, message: `Successfully connected to device at ${ip}:${port}` });
 			} else {
 				return res.status(400).json({ connected: false, error: "Could not connect to device. Check IP, port, and network connection." });
 			}

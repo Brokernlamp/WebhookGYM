@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS plans (
   duration INTEGER NOT NULL,
   price NUMERIC NOT NULL,
   features TEXT,  -- JSON string array
-  is_active INTEGER NOT NULL DEFAULT 1
+  is_active INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT,
+  deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_plans_active ON plans(is_active);
 
@@ -42,6 +44,8 @@ CREATE TABLE IF NOT EXISTS members (
   notes TEXT,
   gender TEXT,
   age INTEGER,
+  updated_at TEXT,
+  deleted_at TEXT,
   FOREIGN KEY(plan_id) REFERENCES plans(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_members_email ON members(email);
@@ -58,6 +62,8 @@ CREATE TABLE IF NOT EXISTS payments (
   due_date TEXT,
   paid_date TEXT,
   plan_name TEXT,
+  updated_at TEXT,
+  deleted_at TEXT,
   FOREIGN KEY(member_id) REFERENCES members(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_payments_member ON payments(member_id);
@@ -72,6 +78,8 @@ CREATE TABLE IF NOT EXISTS attendance (
   latitude REAL,
   longitude REAL,
   marked_via TEXT NOT NULL DEFAULT 'manual',
+  updated_at TEXT,
+  deleted_at TEXT,
   FOREIGN KEY(member_id) REFERENCES members(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_attendance_member ON attendance(member_id);
@@ -86,7 +94,9 @@ CREATE TABLE IF NOT EXISTS equipment (
   warranty_expiry TEXT,
   last_maintenance TEXT,
   next_maintenance TEXT,
-  status TEXT NOT NULL
+  status TEXT NOT NULL,
+  updated_at TEXT,
+  deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_equipment_status ON equipment(status);
 

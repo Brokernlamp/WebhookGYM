@@ -339,6 +339,21 @@ export async function setUserAccessGroup(settings: BiometricSettings, userId: st
 // Sync member access groups to device (call after linking/unlinking or status changes)
 export async function syncMemberAccessGroups(settings: BiometricSettings): Promise<void> {
   try {
+    // Try Python bridge first (more reliable)
+    try {
+      const { syncAccessGroupsPython, isPythonBridgeAvailable } = await import("./biometric-python");
+      if (await isPythonBridgeAvailable()) {
+        const result = await syncAccessGroupsPython(settings);
+        if (result.success) {
+          console.log(`✓ Synced access groups via Python: ${result.results?.length || 0} users`);
+          return;
+        }
+      }
+    } catch (pyErr) {
+      console.log("Python bridge not available, using native implementation");
+    }
+    
+    // Fallback to native implementation
     const members = await storage.listMembers();
     const linkedMembers = members.filter((m: any) => !!(m.biometricId ?? m.biometric_id));
     
@@ -431,9 +446,18 @@ export async function processScan(biometricId: string, settings: BiometricSettin
         markedVia: "biometric",
       } as any);
       
-      // Unlock door
+      // Unlock door (try Python first, fallback to native)
       const unlockSeconds = parseInt(settings.unlockSeconds || "3", 10);
-      await unlockDoor(settings, unlockSeconds);
+      try {
+        const { unlockDoorPython, isPythonBridgeAvailable } = await import("./biometric-python");
+        if (await isPythonBridgeAvailable()) {
+          await unlockDoorPython(settings, unlockSeconds);
+        } else {
+          await unlockDoor(settings, unlockSeconds);
+        }
+      } catch {
+        await unlockDoor(settings, unlockSeconds);
+      }
       
       console.log(`✅ Access granted: ${member.name} (${biometricId})`);
       logScan(biometricId, member, true, reason);
@@ -541,15 +565,54 @@ export function startBiometricDevicePolling(): void {
     }
   })();
   
-  // Initial poll
-  pollDeviceForScans().catch(console.error);
-  
-  // Poll every 1 second
-  pollingInterval = setInterval(() => {
+  // Try Python live_capture first (real-time, more reliable)
+  (async () => {
+    try {
+      const { startLiveScanMonitoring, isPythonBridgeAvailable } = await import("./biometric-python");
+      if (await isPythonBridgeAvailable()) {
+        const settings = await storage.getSettings();
+        const ip = settings.biometricIp;
+        if (ip) {
+          const monitor = startLiveScanMonitoring(
+            {
+              ip,
+              port: settings.biometricPort || "4370",
+              commKey: settings.biometricCommKey || "0",
+              unlockSeconds: settings.biometricUnlockSeconds || "3",
+              relayType: settings.biometricRelayType || "NO"
+            },
+            async (userId, timestamp) => {
+              // Process scan event
+              await processScan(userId, {
+                ip,
+                port: settings.biometricPort || "4370",
+                commKey: settings.biometricCommKey || "0",
+                unlockSeconds: settings.biometricUnlockSeconds || "3",
+                relayType: settings.biometricRelayType || "NO"
+              });
+            },
+            (error) => {
+              console.error("Python live capture error:", error);
+            }
+          );
+          
+          console.log("🔄 Biometric device monitoring started (Python live_capture)");
+          return; // Success, don't use polling
+        }
+      }
+    } catch (pyErr) {
+      console.log("Python bridge not available, using polling");
+    }
+    
+    // Fallback to polling
     pollDeviceForScans().catch(console.error);
-  }, 1000);
-  
-  console.log("🔄 Biometric device polling started (every 1 second)");
+    
+    pollingInterval = setInterval(() => {
+      pollDeviceForScans().catch(console.error);
+    }, 1000);
+    
+    console.log("🔄 Biometric device polling started (every 1 second)");
+  })();
 }
 
 // Stop polling

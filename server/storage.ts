@@ -70,32 +70,44 @@ export class TursoStorage implements IStorage {
   private async ensureSchemaUpgrades() {
     if (this.ensuredUpgrades) return;
     try {
-      const columns = await this.db.execute({ sql: `PRAGMA table_info(members)`, args: [] });
-      const hasBiometric = (columns.rows as any[]).some((r) => (r.name ?? r.cid ?? r[1]) === "biometric_id" || r?.name === "biometric_id");
-      if (!hasBiometric) {
-        await this.db.execute({ sql: `ALTER TABLE members ADD COLUMN biometric_id TEXT`, args: [] });
-      }
-      // Add updated_at and deleted_at to core tables if missing
+      // Simple approach: try to add columns, ignore if already exists
       const addColIfMissing = async (table: string, col: string, type: string) => {
         try {
-          const info = await this.db.execute({ sql: `PRAGMA table_info(${table})`, args: [] });
-          const has = (info.rows as any[]).some((r) => (r.name ?? r.cid ?? r[1]) === col || r?.name === col);
-          if (!has) {
-            await this.db.execute({ sql: `ALTER TABLE ${table} ADD COLUMN ${col} ${type}`, args: [] });
+          await this.db.execute({ sql: `ALTER TABLE ${table} ADD COLUMN ${col} ${type}`, args: [] });
+          console.log(`✓ Added column ${table}.${col}`);
+        } catch (e: any) {
+          // Column already exists - that's fine, ignore
+          const msg = String(e?.message || e || "");
+          if (msg.includes("duplicate column") || msg.includes("already exists")) {
+            // Expected - column exists
+          } else {
+            console.log(`Column ${table}.${col} may already exist or table doesn't exist yet`);
           }
-        } catch {
-          // ignore per-table failures
         }
       };
+      
+      // Add biometric_id to members
+      try {
+        await this.db.execute({ sql: `ALTER TABLE members ADD COLUMN biometric_id TEXT`, args: [] });
+        console.log(`✓ Added column members.biometric_id`);
+      } catch (e: any) {
+        // Ignore if already exists
+      }
+      
+      // Add updated_at and deleted_at to all core tables
       const coreTables = ["members", "payments", "attendance", "equipment", "plans"];
       for (const t of coreTables) {
         await addColIfMissing(t, "updated_at", "TEXT");
         await addColIfMissing(t, "deleted_at", "TEXT");
       }
+      
+      console.log("✅ Schema upgrades completed");
+      this.ensuredUpgrades = true;
     } catch (e) {
-      // ignore; best-effort
+      console.error("❌ Schema upgrade failed:", e);
+      // Don't mark as ensured if it failed - allow retry
+      // But don't throw - let operations continue (they might work if columns already exist)
     }
-    this.ensuredUpgrades = true;
   }
 
   private mapMember(row: any): Member {
