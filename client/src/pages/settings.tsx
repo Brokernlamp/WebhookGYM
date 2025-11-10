@@ -57,6 +57,10 @@ export default function Settings() {
     relayType: "NO",
   });
 
+  const [testUserId, setTestUserId] = useState("");
+  const [lastScannedId, setLastScannedId] = useState<string | null>(null);
+  const [lastScanTime, setLastScanTime] = useState<Date | null>(null);
+
   const [databaseSyncSettings, setDatabaseSyncSettings] = useState({
     tursoDatabaseUrl: "",
     tursoAuthToken: "",
@@ -66,6 +70,25 @@ export default function Settings() {
     queryKey: ["/api/biometric/settings"],
     queryFn: getQueryFn({ on401: "throw" }),
   });
+
+  // Monitor scan logs in real-time for test detection
+  const { data: scanLogsData = { logs: [] } } = useQuery({
+    queryKey: ["/api/biometric/scan-logs"],
+    queryFn: getQueryFn({ on401: "throw" }),
+    refetchInterval: 1000, // Check every second
+    enabled: !!testUserId && !!biometricSettings.ip, // Only monitor if test ID is set and device is configured
+  });
+
+  // Update last scanned ID when new scans arrive
+  useEffect(() => {
+    if (scanLogsData?.logs && scanLogsData.logs.length > 0) {
+      const latestLog = scanLogsData.logs[0]; // Most recent log (they're reversed)
+      if (latestLog && latestLog.biometricId) {
+        setLastScannedId(latestLog.biometricId);
+        setLastScanTime(new Date(latestLog.timestamp));
+      }
+    }
+  }, [scanLogsData]);
 
   useEffect(() => {
     if (biometricSettingsData && !biometricLoading) {
@@ -703,6 +726,62 @@ export default function Settings() {
                 </>
               )}
             </Button>
+          </div>
+          <Separator />
+          <div className="space-y-4 p-4 bg-blue-50 dark:bg-blue-950/20 rounded-md border border-blue-200 dark:border-blue-800">
+            <div className="flex items-center gap-2">
+              <Fingerprint className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+              <p className="text-sm font-medium">Test Scan Detection</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Enter a User ID below, then scan that User ID on the device. The system will detect and show if it matches.
+            </p>
+            <div className="space-y-2">
+              <Label htmlFor="test-user-id">Test User ID</Label>
+              <Input
+                id="test-user-id"
+                placeholder="e.g., 41"
+                value={testUserId}
+                onChange={(e) => setTestUserId(e.target.value)}
+                className="max-w-xs"
+              />
+            </div>
+            {testUserId && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-muted-foreground">Status:</span>
+                  {lastScannedId ? (
+                    <>
+                      {lastScannedId === testUserId || lastScannedId == testUserId ? (
+                        <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+                          <CheckCircle2 className="h-4 w-4" />
+                          <span className="font-medium">✅ TEST OK - Match Detected!</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 text-orange-600 dark:text-orange-400">
+                          <XCircle className="h-4 w-4" />
+                          <span className="font-medium">
+                            ⚠️ Scanned ID: {lastScannedId} (Expected: {testUserId})
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">Waiting for scan...</span>
+                  )}
+                </div>
+                {lastScannedId && lastScanTime && (
+                  <div className="text-xs text-muted-foreground">
+                    Last scan: {lastScanTime.toLocaleTimeString()} - User ID: {lastScannedId}
+                  </div>
+                )}
+                {!lastScannedId && (
+                  <div className="text-xs text-muted-foreground italic">
+                    💡 Scan the fingerprint/card for User ID "{testUserId}" on the device now...
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div className="p-4 bg-muted rounded-md">
             <p className="text-sm font-medium mb-2">Access Control Rules:</p>

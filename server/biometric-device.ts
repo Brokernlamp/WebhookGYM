@@ -199,8 +199,19 @@ export async function getDeviceUsers(settings: BiometricSettings): Promise<Devic
 }
 
 // Get attendance logs from device
-async function getAttendanceLogs(settings: BiometricSettings): Promise<AttendanceLog[]> {
-  return new Promise((resolve) => {
+export async function getAttendanceLogs(settings: BiometricSettings): Promise<AttendanceLog[]> {
+  return new Promise(async (resolve) => {
+    // Ensure connected
+    if (!deviceConnection || deviceConnection.destroyed) {
+      console.log("⚠️ Device not connected, attempting connection...");
+      const connected = await connectToDevice(settings);
+      if (!connected || !deviceConnection || deviceConnection.destroyed) {
+        console.log("❌ Failed to connect to device for log fetch");
+        resolve([]);
+        return;
+      }
+    }
+    
     if (!deviceConnection || deviceConnection.destroyed) {
       resolve([]);
       return;
@@ -402,15 +413,28 @@ export function getScanLogs(): ScanLog[] {
 // Process a scan event
 export async function processScan(biometricId: string, settings: BiometricSettings): Promise<void> {
   try {
+    console.log(`🔍 Processing scan for biometric ID: ${biometricId}`);
+    
     // Find member by biometric ID
     const allMembers = await storage.listMembers();
-    const member = allMembers.find((m: any) => (m as any).biometricId === biometricId || (m as any).biometricId == biometricId);
+    console.log(`📋 Checking ${allMembers.length} members for biometric ID ${biometricId}`);
+    
+    const member = allMembers.find((m: any) => {
+      const mBioId = (m as any).biometricId;
+      const match = mBioId === biometricId || mBioId == biometricId;
+      if (mBioId) {
+        console.log(`  - Member ${m.name}: biometricId="${mBioId}" (type: ${typeof mBioId}) vs scan="${biometricId}" (type: ${typeof biometricId}) -> ${match ? "✅ MATCH" : "❌"}`);
+      }
+      return match;
+    });
     
     if (!member) {
       console.log(`⚠️ Biometric scan from unknown user: ${biometricId}`);
       logScan(biometricId, null, false, "unknown_user");
       return;
     }
+    
+    console.log(`👤 Found member: ${member.name} (ID: ${member.id}, Status: ${member.status})`);
     
     // Check access control (same logic as simulate-scan)
     const now = new Date();
@@ -513,10 +537,15 @@ async function pollDeviceForScans(): Promise<void> {
       relayType: settings.biometricRelayType || "NO"
     });
     
+    if (logs.length > 0) {
+      console.log(`📥 Found ${logs.length} new log(s) from device`);
+    }
+    
     // Process new logs
     for (const log of logs) {
       // Only process logs newer than last processed
       if (!lastLogTime || log.timestamp > lastLogTime) {
+        console.log(`🔄 Processing scan: User ID ${log.userId} at ${log.timestamp}`);
         await processScan(log.userId, {
           ip,
           port,
@@ -570,6 +599,7 @@ export function startBiometricDevicePolling(): void {
     try {
       const { startLiveScanMonitoring, isPythonBridgeAvailable } = await import("./biometric-python");
       if (await isPythonBridgeAvailable()) {
+        console.log("✅ Python bridge available, attempting live_capture...");
         const settings = await storage.getSettings();
         const ip = settings.biometricIp;
         if (ip) {
@@ -583,6 +613,7 @@ export function startBiometricDevicePolling(): void {
             },
             async (userId, timestamp) => {
               // Process scan event
+              console.log(`📱 Live scan detected: User ID ${userId} at ${timestamp}`);
               await processScan(userId, {
                 ip,
                 port: settings.biometricPort || "4370",
@@ -592,26 +623,31 @@ export function startBiometricDevicePolling(): void {
               });
             },
             (error) => {
-              console.error("Python live capture error:", error);
+              console.error("❌ Python live capture error:", error);
             }
           );
           
           console.log("🔄 Biometric device monitoring started (Python live_capture)");
           return; // Success, don't use polling
+        } else {
+          console.log("⚠️ No biometric IP configured");
         }
+      } else {
+        console.log("⚠️ Python bridge not available, using polling");
       }
     } catch (pyErr) {
-      console.log("Python bridge not available, using polling");
+      console.log("⚠️ Python bridge error, using polling:", pyErr);
     }
     
     // Fallback to polling
+    console.log("🔄 Starting native polling (every 1 second)...");
     pollDeviceForScans().catch(console.error);
     
     pollingInterval = setInterval(() => {
       pollDeviceForScans().catch(console.error);
     }, 1000);
     
-    console.log("🔄 Biometric device polling started (every 1 second)");
+    console.log("✅ Biometric device polling started (every 1 second)");
   })();
 }
 

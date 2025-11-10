@@ -16,6 +16,7 @@ import {
   Search,
   LogIn,
   Users,
+  RefreshCw,
 } from "lucide-react";
 import { MetricCard } from "@/components/metric-card";
 import {
@@ -91,6 +92,28 @@ export default function Attendance() {
       toast({
         title: "Check-in successful",
         description: "Member attendance has been recorded.",
+      });
+    },
+  });
+  const syncNow = useMutation({
+    mutationFn: async () => {
+      await apiRequest("POST", "/api/biometric/sync-now");
+    },
+    onSuccess: async (data: any) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/biometric/scan-logs"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/attendance"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/biometric/scan-logs"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/attendance"] });
+      toast({
+        title: "Sync completed",
+        description: data.message || "Fetched logs from device",
+      });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Sync failed",
+        description: err.message || "Failed to sync with device",
+        variant: "destructive",
       });
     },
   });
@@ -552,8 +575,21 @@ export default function Attendance() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Biometric Scan Logs</CardTitle>
-          <p className="text-sm text-muted-foreground">Real-time scan events from biometric device</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Biometric Scan Logs</CardTitle>
+              <p className="text-sm text-muted-foreground">Real-time scan events from biometric device</p>
+            </div>
+            <Button
+              onClick={() => syncNow.mutate()}
+              disabled={syncNow.isPending}
+              variant="outline"
+              size="sm"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${syncNow.isPending ? "animate-spin" : ""}`} />
+              Sync Now
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="space-y-2 max-h-[400px] overflow-y-auto">

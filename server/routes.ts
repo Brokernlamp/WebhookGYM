@@ -756,6 +756,47 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 		}
 	});
 
+	// Manual sync - fetch logs from device immediately
+	app.post("/api/biometric/sync-now", async (_req: Request, res: Response) => {
+		try {
+			const settings = await storage.getSettings();
+			const ip = settings.biometricIp;
+			if (!ip) {
+				return res.status(400).json({ message: "Biometric device not configured" });
+			}
+
+			const { getAttendanceLogs, processScan } = await import("./biometric-device");
+			const logs = await getAttendanceLogs({
+				ip,
+				port: settings.biometricPort || "4370",
+				commKey: settings.biometricCommKey || "0",
+				unlockSeconds: settings.biometricUnlockSeconds || "3",
+				relayType: settings.biometricRelayType || "NO"
+			});
+
+			console.log(`📥 Manual sync: Found ${logs.length} log(s) from device`);
+
+			// Process all logs
+			for (const log of logs) {
+				await processScan(log.userId, {
+					ip,
+					port: settings.biometricPort || "4370",
+					commKey: settings.biometricCommKey || "0",
+					unlockSeconds: settings.biometricUnlockSeconds || "3",
+					relayType: settings.biometricRelayType || "NO"
+				});
+			}
+
+			return jsonOk(res, { 
+				message: `Synced ${logs.length} log(s)`,
+				logsCount: logs.length 
+			});
+		} catch (err) {
+			console.error("Manual sync error:", err);
+			return res.status(500).json({ message: err instanceof Error ? err.message : "Failed to sync" });
+		}
+	});
+
 	// HTTP Push endpoint for eSSL devices (if device supports push notifications)
 	app.post("/essl/push", async (req: Request, res: Response) => {
 		try {
