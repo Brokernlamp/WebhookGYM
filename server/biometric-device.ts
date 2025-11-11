@@ -201,6 +201,8 @@ export async function getDeviceUsers(settings: BiometricSettings): Promise<Devic
 // Get attendance logs from device
 export async function getAttendanceLogs(settings: BiometricSettings): Promise<AttendanceLog[]> {
   return new Promise(async (resolve) => {
+    console.log("🔍 getAttendanceLogs: Starting...");
+    
     // Ensure connected
     if (!deviceConnection || deviceConnection.destroyed) {
       console.log("⚠️ Device not connected, attempting connection...");
@@ -213,6 +215,7 @@ export async function getAttendanceLogs(settings: BiometricSettings): Promise<At
     }
     
     if (!deviceConnection || deviceConnection.destroyed) {
+      console.log("❌ Device connection is null or destroyed");
       resolve([]);
       return;
     }
@@ -220,15 +223,22 @@ export async function getAttendanceLogs(settings: BiometricSettings): Promise<At
     const commKey = parseInt(settings.commKey || "0", 10);
     const cmd = buildCommand(CMD_GET_ATTENDANCE_LOG, Buffer.alloc(0), commKey);
     
+    console.log("📤 Sending GET_ATTENDANCE_LOG command to device...");
+    
     const timeout = setTimeout(() => {
-      resolve([]);
+      console.log("⏱️ Timeout waiting for attendance logs (5s)");
+      deviceConnection?.removeListener("data", dataHandler);
+      resolve(logs);
     }, 5000);
     
     const logs: AttendanceLog[] = [];
     let buffer = Buffer.alloc(0);
+    let responseReceived = false;
     
     const dataHandler = (data: Buffer) => {
+      console.log(`📥 Received ${data.length} bytes from device`);
       buffer = Buffer.concat([buffer, data]);
+      console.log(`📦 Buffer size: ${buffer.length} bytes`);
       
       // Try to parse logs from buffer
       // eSSL log format: timestamp (4 bytes) + user_id (2 bytes) + status + verify_mode
@@ -239,15 +249,19 @@ export async function getAttendanceLogs(settings: BiometricSettings): Promise<At
           const status = buffer[6];
           const verifyMode = buffer[7];
           
+          const logDate = new Date(timestamp * 1000);
+          console.log(`   📝 Parsed log: User ID ${userId} at ${logDate.toISOString()}`);
+          
           logs.push({
             userId: userId.toString(),
-            timestamp: new Date(timestamp * 1000), // Convert Unix timestamp
+            timestamp: logDate,
             status,
             verifyMode
           });
           
           buffer = buffer.slice(8);
         } catch (e) {
+          console.error(`   ❌ Error parsing log entry:`, e);
           break;
         }
       }
@@ -255,14 +269,20 @@ export async function getAttendanceLogs(settings: BiometricSettings): Promise<At
       // If we got a response, process it
       const response = parseResponse(buffer);
       if (response && response.command === CMD_GET_ATTENDANCE_LOG) {
-        clearTimeout(timeout);
-        deviceConnection?.removeListener("data", dataHandler);
-        resolve(logs);
+        console.log(`✅ Received response for GET_ATTENDANCE_LOG command`);
+        if (!responseReceived) {
+          responseReceived = true;
+          clearTimeout(timeout);
+          deviceConnection?.removeListener("data", dataHandler);
+          console.log(`📊 Total logs parsed: ${logs.length}`);
+          resolve(logs);
+        }
       }
     };
     
     deviceConnection.on("data", dataHandler);
     deviceConnection.write(cmd);
+    console.log("✅ Command sent, waiting for response...");
   });
 }
 
@@ -563,10 +583,14 @@ export async function processScan(biometricId: string | number, settings: Biomet
 
 // Poll device for new attendance logs
 async function pollDeviceForScans(): Promise<void> {
-  if (isPolling) return;
+  if (isPolling) {
+    console.log("⏸️ Polling already in progress, skipping...");
+    return;
+  }
   
   try {
     isPolling = true;
+    console.log("🔄 Polling device for attendance logs...");
     
     const settings = await storage.getSettings();
     const ip = settings.biometricIp;
@@ -574,12 +598,14 @@ async function pollDeviceForScans(): Promise<void> {
     const commKey = settings.biometricCommKey || "0";
     
     if (!ip) {
+      console.log("⚠️ No biometric IP configured, skipping poll");
       isPolling = false;
       return;
     }
     
     // Ensure connected
     if (!deviceConnection || deviceConnection.destroyed) {
+      console.log("🔌 Device not connected, attempting connection...");
       const connected = await connectToDevice({
         ip,
         port,
@@ -589,12 +615,15 @@ async function pollDeviceForScans(): Promise<void> {
       });
       
       if (!connected) {
+        console.log("❌ Failed to connect to device");
         isPolling = false;
         return;
       }
+      console.log("✅ Device connected");
     }
     
     // Get new logs
+    console.log("📥 Fetching attendance logs from device...");
     const logs = await getAttendanceLogs({
       ip,
       port,
@@ -603,15 +632,21 @@ async function pollDeviceForScans(): Promise<void> {
       relayType: settings.biometricRelayType || "NO"
     });
     
+    console.log(`📊 Received ${logs.length} log(s) from device`);
+    
     if (logs.length > 0) {
-      console.log(`📥 Found ${logs.length} new log(s) from device`);
+      console.log(`📥 Found ${logs.length} log(s) from device`);
+      logs.forEach((log, idx) => {
+        console.log(`   Log ${idx + 1}: User ID ${log.userId} at ${log.timestamp.toISOString()}`);
+      });
     }
     
     // Process new logs
+    let processedCount = 0;
     for (const log of logs) {
       // Only process logs newer than last processed
       if (!lastLogTime || log.timestamp > lastLogTime) {
-        console.log(`🔄 Processing scan: User ID ${log.userId} at ${log.timestamp}`);
+        console.log(`🔄 Processing scan: User ID ${log.userId} at ${log.timestamp.toISOString()}`);
         await processScan(log.userId, {
           ip,
           port,
@@ -623,10 +658,23 @@ async function pollDeviceForScans(): Promise<void> {
         if (!lastLogTime || log.timestamp > lastLogTime) {
           lastLogTime = log.timestamp;
         }
+        processedCount++;
+      } else {
+        console.log(`⏭️ Skipping old log: User ID ${log.userId} at ${log.timestamp.toISOString()} (already processed)`);
       }
+    }
+    
+    if (processedCount > 0) {
+      console.log(`✅ Processed ${processedCount} new scan(s)`);
+    } else if (logs.length > 0) {
+      console.log(`ℹ️ All ${logs.length} log(s) were already processed`);
     }
   } catch (error) {
     console.error("❌ Error polling device:", error);
+    if (error instanceof Error) {
+      console.error("   Error message:", error.message);
+      console.error("   Error stack:", error.stack);
+    }
   } finally {
     isPolling = false;
   }
@@ -634,19 +682,29 @@ async function pollDeviceForScans(): Promise<void> {
 
 // Start polling device for scans
 export function startBiometricDevicePolling(): void {
+  console.log("🚀 startBiometricDevicePolling() called");
+  
   const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
-  if (!desktop) return;
+  console.log(`   Desktop mode: ${desktop} (DESKTOP=${process.env.DESKTOP}, ELECTRON=${process.env.ELECTRON})`);
+  
+  if (!desktop) {
+    console.log("⚠️ Not in desktop mode, biometric polling disabled");
+    return;
+  }
   
   if (pollingInterval) {
+    console.log("🔄 Clearing existing polling interval");
     clearInterval(pollingInterval);
   }
   
   // Initial sync of access groups
   (async () => {
     try {
+      console.log("🔧 Syncing member access groups...");
       const settings = await storage.getSettings();
       const ip = settings.biometricIp;
       if (ip) {
+        console.log(`   Device IP: ${ip}`);
         await syncMemberAccessGroups({
           ip,
           port: settings.biometricPort || "4370",
@@ -654,21 +712,30 @@ export function startBiometricDevicePolling(): void {
           unlockSeconds: settings.biometricUnlockSeconds || "3",
           relayType: settings.biometricRelayType || "NO"
         });
+        console.log("✅ Access groups synced");
+      } else {
+        console.log("⚠️ No biometric IP configured, skipping access group sync");
       }
     } catch (err) {
-      console.error("Failed to sync access groups on startup:", err);
+      console.error("❌ Failed to sync access groups on startup:", err);
     }
   })();
   
   // Start native polling (every 1 second)
   console.log("🔄 Starting native polling (every 1 second)...");
-  pollDeviceForScans().catch(console.error);
+  console.log("   First poll will start immediately...");
+  pollDeviceForScans().catch((err) => {
+    console.error("❌ Error in initial poll:", err);
+  });
   
   pollingInterval = setInterval(() => {
-    pollDeviceForScans().catch(console.error);
+    pollDeviceForScans().catch((err) => {
+      console.error("❌ Error in scheduled poll:", err);
+    });
   }, 1000);
   
   console.log("✅ Biometric device polling started (every 1 second)");
+  console.log("   Polling interval ID:", pollingInterval);
 }
 
 // Stop polling
