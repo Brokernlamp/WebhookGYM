@@ -21,7 +21,7 @@ from zk import ZK, const
 from zk.exception import ZKNetworkError, ZKErrorResponse
 
 # Configuration
-DEVICE_IP = os.getenv("BIOMETRIC_IP", "192.168.1.201")
+DEVICE_IP = os.getenv("BIOMETRIC_IP", "192.168.1.81")
 PORT = int(os.getenv("BIOMETRIC_PORT", "4370"))
 COMM_KEY = int(os.getenv("BIOMETRIC_COMM_KEY", "0"))
 UNLOCK_SECS = int(os.getenv("BIOMETRIC_UNLOCK_SECS", "3"))
