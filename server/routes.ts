@@ -834,7 +834,7 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 				configured: !!ip,
 				ip: ip || null,
 				pythonAvailable,
-				monitoringMethod: pythonAvailable ? "Python live_capture" : "Native polling",
+				monitoringMethod: "Native polling",
 				scanLogsCount: (await import("./biometric-device")).getScanLogs().length,
 			});
 		} catch (err) {
