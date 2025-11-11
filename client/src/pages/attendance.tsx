@@ -599,12 +599,14 @@ export default function Attendance() {
               (scanLogsData.logs || []).slice(0, 50).map((log: any, index: number) => {
                 const reasonLabels: Record<string, string> = {
                   allowed: "Allowed",
+                  allowed_attendance_failed: "Allowed (Attendance Failed)",
                   unknown_user: "Unknown User",
                   inactive: "Inactive",
                   expired: "Expired",
                   not_started: "Not Started",
                   payment_pending: "Payment Pending",
                   payment_overdue: "Payment Overdue",
+                  relay_error: "Relay Error",
                   error: "Error",
                 };
                 return (

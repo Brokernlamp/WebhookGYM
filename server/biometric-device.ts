@@ -457,11 +457,38 @@ export async function processScan(biometricId: string | number, settings: Biomet
     console.log(`👤 Found member: ${member.name} (ID: ${member.id}, Status: ${member.status})`);
     
     // Check access control (same logic as simulate-scan)
+    // Determine reason FIRST before any operations that might fail
     const now = new Date();
-    const startOk = !member.startDate || new Date(member.startDate) <= now;
-    const endOk = !member.expiryDate || new Date(member.expiryDate) >= now;
+    let startOk = true;
+    let endOk = true;
+    
+    try {
+      if (member.startDate) {
+        const startDate = new Date(member.startDate);
+        startOk = startDate <= now;
+        console.log(`   Start date check: ${member.startDate} -> ${startDate.toISOString()} <= ${now.toISOString()} = ${startOk}`);
+      }
+    } catch (e) {
+      console.warn(`   ⚠️ Failed to parse startDate "${member.startDate}":`, e);
+      startOk = true; // Default to allowed if parsing fails
+    }
+    
+    try {
+      if (member.expiryDate) {
+        const expiryDate = new Date(member.expiryDate);
+        endOk = expiryDate >= now;
+        console.log(`   Expiry date check: ${member.expiryDate} -> ${expiryDate.toISOString()} >= ${now.toISOString()} = ${endOk}`);
+      }
+    } catch (e) {
+      console.warn(`   ⚠️ Failed to parse expiryDate "${member.expiryDate}":`, e);
+      endOk = true; // Default to allowed if parsing fails
+    }
+    
     const statusOk = member.status === "active";
     const paymentOk = member.paymentStatus !== "overdue" && member.paymentStatus !== "pending";
+    
+    console.log(`   Status check: ${member.status} === "active" = ${statusOk}`);
+    console.log(`   Payment check: ${member.paymentStatus} (overdue/pending = ${!paymentOk})`);
     
     let allowed = false;
     let reason = "allowed";
@@ -479,16 +506,26 @@ export async function processScan(biometricId: string | number, settings: Biomet
       reason = "allowed";
     }
     
+    console.log(`   📊 Access decision: allowed=${allowed}, reason="${reason}"`);
+    
+    // Now log the scan with the determined reason (even if attendance/unlock fails)
     if (allowed) {
-      // Record attendance
-      await storage.createAttendance({
-        memberId: member.id,
-        checkInTime: now,
-        checkOutTime: null,
-        latitude: null as any,
-        longitude: null as any,
-        markedVia: "biometric",
-      } as any);
+      // Record attendance (wrap in try-catch so we still log the scan)
+      try {
+        await storage.createAttendance({
+          memberId: member.id,
+          checkInTime: now,
+          checkOutTime: null,
+          latitude: null as any,
+          longitude: null as any,
+          markedVia: "biometric",
+        } as any);
+        console.log(`   ✅ Attendance recorded`);
+      } catch (attErr) {
+        console.error(`   ⚠️ Failed to record attendance:`, attErr);
+        // Still log the scan as allowed, but note the attendance error
+        reason = "allowed_attendance_failed";
+      }
       
       // Unlock door (try Python first, fallback to native)
       const unlockSeconds = parseInt(settings.unlockSeconds || "3", 10);
@@ -499,19 +536,29 @@ export async function processScan(biometricId: string | number, settings: Biomet
         } else {
           await unlockDoor(settings, unlockSeconds);
         }
-      } catch {
-        await unlockDoor(settings, unlockSeconds);
+        console.log(`   ✅ Door unlocked`);
+      } catch (unlockErr) {
+        console.error(`   ⚠️ Failed to unlock door:`, unlockErr);
+        // Still log as allowed, door unlock is secondary
       }
       
-      console.log(`✅ Access granted: ${member.name} (${normalizedId})`);
+      console.log(`✅ Access granted: ${member.name} (${normalizedId}) - ${reason}`);
       logScan(normalizedId, member, true, reason);
     } else {
       console.log(`❌ Access denied: ${member.name} (${normalizedId}) - ${reason}`);
       logScan(normalizedId, member, false, reason);
     }
   } catch (error) {
-    console.error(`❌ Error processing scan for ${normalizedId}:`, error);
-    logScan(normalizedId, null, false, "error");
+    // If we get here, something critical failed (like finding the member)
+    // Try to provide more context
+    console.error(`❌ Critical error processing scan for ${normalizedId}:`, error);
+    if (error instanceof Error) {
+      console.error(`   Error message: ${error.message}`);
+      console.error(`   Error stack: ${error.stack}`);
+    }
+    // Log with a more descriptive error reason
+    const errorReason = error instanceof Error ? `error: ${error.message.substring(0, 50)}` : "error";
+    logScan(normalizedId, null, false, errorReason);
   }
 }
 
