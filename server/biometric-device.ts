@@ -35,6 +35,7 @@ let isPolling = false;
 let pollingInterval: NodeJS.Timeout | null = null;
 let lastLogTime: Date | null = null;
 let scanLogs: ScanLog[] = []; // In-memory scan log (last 1000)
+let pythonMonitor: { process: any; stop: () => void } | null = null; // Python live capture monitor
 
 // eSSL Protocol Constants
 const CMD_CONNECT = 0x10000001;
@@ -201,8 +202,6 @@ export async function getDeviceUsers(settings: BiometricSettings): Promise<Devic
 // Get attendance logs from device
 export async function getAttendanceLogs(settings: BiometricSettings): Promise<AttendanceLog[]> {
   return new Promise(async (resolve) => {
-    console.log("🔍 getAttendanceLogs: Starting...");
-    
     // Ensure connected
     if (!deviceConnection || deviceConnection.destroyed) {
       console.log("⚠️ Device not connected, attempting connection...");
@@ -215,7 +214,6 @@ export async function getAttendanceLogs(settings: BiometricSettings): Promise<At
     }
     
     if (!deviceConnection || deviceConnection.destroyed) {
-      console.log("❌ Device connection is null or destroyed");
       resolve([]);
       return;
     }
@@ -223,22 +221,15 @@ export async function getAttendanceLogs(settings: BiometricSettings): Promise<At
     const commKey = parseInt(settings.commKey || "0", 10);
     const cmd = buildCommand(CMD_GET_ATTENDANCE_LOG, Buffer.alloc(0), commKey);
     
-    console.log("📤 Sending GET_ATTENDANCE_LOG command to device...");
-    
     const timeout = setTimeout(() => {
-      console.log("⏱️ Timeout waiting for attendance logs (5s)");
-      deviceConnection?.removeListener("data", dataHandler);
-      resolve(logs);
+      resolve([]);
     }, 5000);
     
     const logs: AttendanceLog[] = [];
     let buffer = Buffer.alloc(0);
-    let responseReceived = false;
     
     const dataHandler = (data: Buffer) => {
-      console.log(`📥 Received ${data.length} bytes from device`);
       buffer = Buffer.concat([buffer, data]);
-      console.log(`📦 Buffer size: ${buffer.length} bytes`);
       
       // Try to parse logs from buffer
       // eSSL log format: timestamp (4 bytes) + user_id (2 bytes) + status + verify_mode
@@ -249,19 +240,15 @@ export async function getAttendanceLogs(settings: BiometricSettings): Promise<At
           const status = buffer[6];
           const verifyMode = buffer[7];
           
-          const logDate = new Date(timestamp * 1000);
-          console.log(`   📝 Parsed log: User ID ${userId} at ${logDate.toISOString()}`);
-          
           logs.push({
             userId: userId.toString(),
-            timestamp: logDate,
+            timestamp: new Date(timestamp * 1000), // Convert Unix timestamp
             status,
             verifyMode
           });
           
           buffer = buffer.slice(8);
         } catch (e) {
-          console.error(`   ❌ Error parsing log entry:`, e);
           break;
         }
       }
@@ -269,20 +256,14 @@ export async function getAttendanceLogs(settings: BiometricSettings): Promise<At
       // If we got a response, process it
       const response = parseResponse(buffer);
       if (response && response.command === CMD_GET_ATTENDANCE_LOG) {
-        console.log(`✅ Received response for GET_ATTENDANCE_LOG command`);
-        if (!responseReceived) {
-          responseReceived = true;
-          clearTimeout(timeout);
-          deviceConnection?.removeListener("data", dataHandler);
-          console.log(`📊 Total logs parsed: ${logs.length}`);
-          resolve(logs);
-        }
+        clearTimeout(timeout);
+        deviceConnection?.removeListener("data", dataHandler);
+        resolve(logs);
       }
     };
     
     deviceConnection.on("data", dataHandler);
     deviceConnection.write(cmd);
-    console.log("✅ Command sent, waiting for response...");
   });
 }
 
@@ -376,7 +357,7 @@ export async function syncMemberAccessGroups(settings: BiometricSettings): Promi
       if (await isPythonBridgeAvailable()) {
         const result = await syncAccessGroupsPython(settings);
         if (result.success) {
-          console.log(`✓ Synced access groups via Python: ${result.results?.length || 0} users`);
+          console.log(`✅ Synced access groups via Python: ${result.results?.length || 0} users`);
           return;
         }
       }
@@ -400,7 +381,7 @@ export async function syncMemberAccessGroups(settings: BiometricSettings): Promi
       const allowed = statusOk && startOk && endOk && paymentOk;
       
       await setUserAccessGroup(settings, biometricId, allowed);
-      console.log(`✓ Synced access group for user ${biometricId}: ${allowed ? "ALLOWED" : "DENIED"}`);
+      console.log(`✅ Synced access group for user ${biometricId}: ${allowed ? "ALLOWED" : "DENIED"}`);
     }
   } catch (error) {
     console.error("Failed to sync access groups:", error);
@@ -408,7 +389,7 @@ export async function syncMemberAccessGroups(settings: BiometricSettings): Promi
 }
 
 // Log scan event (for attendance page display)
-export function logScan(biometricId: string, member: any | null, allowed: boolean, reason: string): void {
+function logScan(biometricId: string, member: any | null, allowed: boolean, reason: string): void {
   const log: ScanLog = {
     biometricId: String(biometricId), // Ensure it's always a string
     memberId: member?.id ?? null,
@@ -476,38 +457,11 @@ export async function processScan(biometricId: string | number, settings: Biomet
     console.log(`👤 Found member: ${member.name} (ID: ${member.id}, Status: ${member.status})`);
     
     // Check access control (same logic as simulate-scan)
-    // Determine reason FIRST before any operations that might fail
     const now = new Date();
-    let startOk = true;
-    let endOk = true;
-    
-    try {
-      if (member.startDate) {
-        const startDate = new Date(member.startDate);
-        startOk = startDate <= now;
-        console.log(`   Start date check: ${member.startDate} -> ${startDate.toISOString()} <= ${now.toISOString()} = ${startOk}`);
-      }
-    } catch (e) {
-      console.warn(`   ⚠️ Failed to parse startDate "${member.startDate}":`, e);
-      startOk = true; // Default to allowed if parsing fails
-    }
-    
-    try {
-      if (member.expiryDate) {
-        const expiryDate = new Date(member.expiryDate);
-        endOk = expiryDate >= now;
-        console.log(`   Expiry date check: ${member.expiryDate} -> ${expiryDate.toISOString()} >= ${now.toISOString()} = ${endOk}`);
-      }
-    } catch (e) {
-      console.warn(`   ⚠️ Failed to parse expiryDate "${member.expiryDate}":`, e);
-      endOk = true; // Default to allowed if parsing fails
-    }
-    
+    const startOk = !member.startDate || new Date(member.startDate) <= now;
+    const endOk = !member.expiryDate || new Date(member.expiryDate) >= now;
     const statusOk = member.status === "active";
     const paymentOk = member.paymentStatus !== "overdue" && member.paymentStatus !== "pending";
-    
-    console.log(`   Status check: ${member.status} === "active" = ${statusOk}`);
-    console.log(`   Payment check: ${member.paymentStatus} (overdue/pending = ${!paymentOk})`);
     
     let allowed = false;
     let reason = "allowed";
@@ -525,26 +479,16 @@ export async function processScan(biometricId: string | number, settings: Biomet
       reason = "allowed";
     }
     
-    console.log(`   📊 Access decision: allowed=${allowed}, reason="${reason}"`);
-    
-    // Now log the scan with the determined reason (even if attendance/unlock fails)
     if (allowed) {
-      // Record attendance (wrap in try-catch so we still log the scan)
-      try {
-        await storage.createAttendance({
-          memberId: member.id,
-          checkInTime: now,
-          checkOutTime: null,
-          latitude: null as any,
-          longitude: null as any,
-          markedVia: "biometric",
-        } as any);
-        console.log(`   ✅ Attendance recorded`);
-      } catch (attErr) {
-        console.error(`   ⚠️ Failed to record attendance:`, attErr);
-        // Still log the scan as allowed, but note the attendance error
-        reason = "allowed_attendance_failed";
-      }
+      // Record attendance
+      await storage.createAttendance({
+        memberId: member.id,
+        checkInTime: now,
+        checkOutTime: null,
+        latitude: null as any,
+        longitude: null as any,
+        markedVia: "biometric",
+      } as any);
       
       // Unlock door (try Python first, fallback to native)
       const unlockSeconds = parseInt(settings.unlockSeconds || "3", 10);
@@ -555,42 +499,28 @@ export async function processScan(biometricId: string | number, settings: Biomet
         } else {
           await unlockDoor(settings, unlockSeconds);
         }
-        console.log(`   ✅ Door unlocked`);
-      } catch (unlockErr) {
-        console.error(`   ⚠️ Failed to unlock door:`, unlockErr);
-        // Still log as allowed, door unlock is secondary
+      } catch {
+        await unlockDoor(settings, unlockSeconds);
       }
       
-      console.log(`✅ Access granted: ${member.name} (${normalizedId}) - ${reason}`);
+      console.log(`✅ Access granted: ${member.name} (${normalizedId})`);
       logScan(normalizedId, member, true, reason);
     } else {
       console.log(`❌ Access denied: ${member.name} (${normalizedId}) - ${reason}`);
       logScan(normalizedId, member, false, reason);
     }
   } catch (error) {
-    // If we get here, something critical failed (like finding the member)
-    // Try to provide more context
-    console.error(`❌ Critical error processing scan for ${normalizedId}:`, error);
-    if (error instanceof Error) {
-      console.error(`   Error message: ${error.message}`);
-      console.error(`   Error stack: ${error.stack}`);
-    }
-    // Log with a more descriptive error reason
-    const errorReason = error instanceof Error ? `error: ${error.message.substring(0, 50)}` : "error";
-    logScan(normalizedId, null, false, errorReason);
+    console.error(`❌ Error processing scan for ${normalizedId}:`, error);
+    logScan(normalizedId, null, false, "error");
   }
 }
 
 // Poll device for new attendance logs
 async function pollDeviceForScans(): Promise<void> {
-  if (isPolling) {
-    console.log("⏸️ Polling already in progress, skipping...");
-    return;
-  }
+  if (isPolling) return;
   
   try {
     isPolling = true;
-    console.log("🔄 Polling device for attendance logs...");
     
     const settings = await storage.getSettings();
     const ip = settings.biometricIp;
@@ -598,14 +528,12 @@ async function pollDeviceForScans(): Promise<void> {
     const commKey = settings.biometricCommKey || "0";
     
     if (!ip) {
-      console.log("⚠️ No biometric IP configured, skipping poll");
       isPolling = false;
       return;
     }
     
     // Ensure connected
     if (!deviceConnection || deviceConnection.destroyed) {
-      console.log("🔌 Device not connected, attempting connection...");
       const connected = await connectToDevice({
         ip,
         port,
@@ -615,15 +543,12 @@ async function pollDeviceForScans(): Promise<void> {
       });
       
       if (!connected) {
-        console.log("❌ Failed to connect to device");
         isPolling = false;
         return;
       }
-      console.log("✅ Device connected");
     }
     
     // Get new logs
-    console.log("📥 Fetching attendance logs from device...");
     const logs = await getAttendanceLogs({
       ip,
       port,
@@ -632,21 +557,15 @@ async function pollDeviceForScans(): Promise<void> {
       relayType: settings.biometricRelayType || "NO"
     });
     
-    console.log(`📊 Received ${logs.length} log(s) from device`);
-    
     if (logs.length > 0) {
-      console.log(`📥 Found ${logs.length} log(s) from device`);
-      logs.forEach((log, idx) => {
-        console.log(`   Log ${idx + 1}: User ID ${log.userId} at ${log.timestamp.toISOString()}`);
-      });
+      console.log(`📥 Found ${logs.length} new log(s) from device`);
     }
     
     // Process new logs
-    let processedCount = 0;
     for (const log of logs) {
       // Only process logs newer than last processed
       if (!lastLogTime || log.timestamp > lastLogTime) {
-        console.log(`🔄 Processing scan: User ID ${log.userId} at ${log.timestamp.toISOString()}`);
+        console.log(`🔄 Processing scan: User ID ${log.userId} at ${log.timestamp}`);
         await processScan(log.userId, {
           ip,
           port,
@@ -658,23 +577,10 @@ async function pollDeviceForScans(): Promise<void> {
         if (!lastLogTime || log.timestamp > lastLogTime) {
           lastLogTime = log.timestamp;
         }
-        processedCount++;
-      } else {
-        console.log(`⏭️ Skipping old log: User ID ${log.userId} at ${log.timestamp.toISOString()} (already processed)`);
       }
-    }
-    
-    if (processedCount > 0) {
-      console.log(`✅ Processed ${processedCount} new scan(s)`);
-    } else if (logs.length > 0) {
-      console.log(`ℹ️ All ${logs.length} log(s) were already processed`);
     }
   } catch (error) {
     console.error("❌ Error polling device:", error);
-    if (error instanceof Error) {
-      console.error("   Error message:", error.message);
-      console.error("   Error stack:", error.stack);
-    }
   } finally {
     isPolling = false;
   }
@@ -682,29 +588,19 @@ async function pollDeviceForScans(): Promise<void> {
 
 // Start polling device for scans
 export function startBiometricDevicePolling(): void {
-  console.log("🚀 startBiometricDevicePolling() called");
-  
   const desktop = process.env.DESKTOP === "1" || process.env.ELECTRON === "1";
-  console.log(`   Desktop mode: ${desktop} (DESKTOP=${process.env.DESKTOP}, ELECTRON=${process.env.ELECTRON})`);
-  
-  if (!desktop) {
-    console.log("⚠️ Not in desktop mode, biometric polling disabled");
-    return;
-  }
+  if (!desktop) return;
   
   if (pollingInterval) {
-    console.log("🔄 Clearing existing polling interval");
     clearInterval(pollingInterval);
   }
   
   // Initial sync of access groups
   (async () => {
     try {
-      console.log("🔧 Syncing member access groups...");
       const settings = await storage.getSettings();
       const ip = settings.biometricIp;
       if (ip) {
-        console.log(`   Device IP: ${ip}`);
         await syncMemberAccessGroups({
           ip,
           port: settings.biometricPort || "4370",
@@ -712,34 +608,77 @@ export function startBiometricDevicePolling(): void {
           unlockSeconds: settings.biometricUnlockSeconds || "3",
           relayType: settings.biometricRelayType || "NO"
         });
-        console.log("✅ Access groups synced");
-      } else {
-        console.log("⚠️ No biometric IP configured, skipping access group sync");
       }
     } catch (err) {
-      console.error("❌ Failed to sync access groups on startup:", err);
+      console.error("Failed to sync access groups on startup:", err);
     }
   })();
   
-  // Start native polling (every 1 second)
-  console.log("🔄 Starting native polling (every 1 second)...");
-  console.log("   First poll will start immediately...");
-  pollDeviceForScans().catch((err) => {
-    console.error("❌ Error in initial poll:", err);
-  });
-  
-  pollingInterval = setInterval(() => {
-    pollDeviceForScans().catch((err) => {
-      console.error("❌ Error in scheduled poll:", err);
-    });
-  }, 1000);
-  
-  console.log("✅ Biometric device polling started (every 1 second)");
-  console.log("   Polling interval ID:", pollingInterval);
+  // Try Python live_capture first (real-time, more reliable)
+  (async () => {
+    try {
+      const { startLiveScanMonitoring, isPythonBridgeAvailable } = await import("./biometric-python");
+      if (await isPythonBridgeAvailable()) {
+        console.log("✅ Python bridge available, attempting live_capture...");
+        const settings = await storage.getSettings();
+        const ip = settings.biometricIp;
+        if (ip) {
+          pythonMonitor = startLiveScanMonitoring(
+            {
+              ip,
+              port: settings.biometricPort || "4370",
+              commKey: settings.biometricCommKey || "0",
+              unlockSeconds: settings.biometricUnlockSeconds || "3",
+              relayType: settings.biometricRelayType || "NO"
+            },
+            async (userId, timestamp) => {
+              // Process scan event
+              console.log(`📱 Live scan detected: User ID ${userId} at ${timestamp}`);
+              await processScan(userId, {
+                ip,
+                port: settings.biometricPort || "4370",
+                commKey: settings.biometricCommKey || "0",
+                unlockSeconds: settings.biometricUnlockSeconds || "3",
+                relayType: settings.biometricRelayType || "NO"
+              });
+            },
+            (error) => {
+              console.error("❌ Python live capture error:", error);
+            }
+          );
+          
+          console.log("🔄 Biometric device monitoring started (Python live_capture)");
+          return; // Success, don't use polling
+        } else {
+          console.log("⚠️ No biometric IP configured");
+        }
+      } else {
+        console.log("⚠️ Python bridge not available, using polling");
+      }
+    } catch (pyErr) {
+      console.log("⚠️ Python bridge error, using polling:", pyErr);
+    }
+    
+    // Fallback to polling
+    console.log("🔄 Starting native polling (every 1 second)...");
+    pollDeviceForScans().catch(console.error);
+    
+    pollingInterval = setInterval(() => {
+      pollDeviceForScans().catch(console.error);
+    }, 1000);
+    
+    console.log("✅ Biometric device polling started (every 1 second)");
+  })();
 }
 
 // Stop polling
 export function stopBiometricDevicePolling(): void {
+  // Stop Python monitor if running
+  if (pythonMonitor) {
+    pythonMonitor.stop();
+    pythonMonitor = null;
+  }
+  
   if (pollingInterval) {
     clearInterval(pollingInterval);
     pollingInterval = null;
@@ -750,11 +689,10 @@ export function stopBiometricDevicePolling(): void {
     deviceConnection = null;
   }
   
-  console.log("⏹️ Biometric device polling stopped");
+  console.log("🛑 Biometric device polling stopped");
 }
 
 // Test connection to device
 export async function testDeviceConnection(settings: BiometricSettings): Promise<boolean> {
   return await connectToDevice(settings);
 }
-
