@@ -483,7 +483,7 @@ export async function processScan(biometricId: string | number, settings: Biomet
       // Record attendance
       await storage.createAttendance({
         memberId: member.id,
-        checkInTime: now,
+        checkInTime: now.toISOString(),
         checkOutTime: null,
         latitude: null as any,
         longitude: null as any,
