@@ -34,6 +34,7 @@ export interface IStorage {
 
   // payments
   listPayments(): Promise<Payment[]>;
+  getPayment(id: string): Promise<Payment | undefined>;
   createPayment(payment: InsertPayment): Promise<Payment>;
   updatePayment(id: string, payment: Partial<InsertPayment>): Promise<Payment | undefined>;
   deletePayment(id: string): Promise<boolean>;
@@ -351,6 +352,13 @@ export class TursoStorage implements IStorage {
     await this.ensureSchemaUpgrades();
     const r = await this.db.execute(`SELECT * FROM payments WHERE deleted_at IS NULL OR deleted_at = '' ORDER BY COALESCE(paid_date, due_date) DESC`);
     return (r.rows as unknown[]).map((x: any) => this.mapPayment(x)) as any;
+  }
+
+  async getPayment(id: string): Promise<Payment | undefined> {
+    await this.ensureSchemaUpgrades();
+    const r = await this.db.execute({ sql: `SELECT * FROM payments WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')`, args: [id] });
+    const row = r.rows[0];
+    return row ? this.mapPayment(row) as any : undefined;
   }
 
   async createPayment(payment: InsertPayment): Promise<Payment> {

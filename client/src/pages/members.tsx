@@ -193,12 +193,28 @@ export default function Members() {
     },
   });
 
+  const sendMemberReminder = useMutation({
+    mutationFn: async (memberId: string) => {
+      const res = await apiRequest("POST", `/api/members/${memberId}/send-reminder`, {});
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      toast({
+        title: "Reminder sent",
+        description: data.message || "Reminder sent successfully via WhatsApp",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to send reminder",
+        description: error?.message || "Could not send reminder. Make sure WhatsApp is connected.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleSendReminder = (id: string) => {
-    const member = members.find((m: any) => m.id === id);
-    toast({
-      title: "Reminder sent",
-      description: member ? `Reminder sent to ${member.name}` : "Reminder sent",
-    });
+    sendMemberReminder.mutate(id);
   };
 
   const handleViewProfile = (id: string) => {

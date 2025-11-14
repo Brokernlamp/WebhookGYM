@@ -171,8 +171,25 @@ export default function Reports() {
               <SelectItem value="custom">Custom Range</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" data-testid="button-export-pdf" onClick={() => {
-            toast({ title: "Export PDF", description: "PDF export feature coming soon" });
+          <Button variant="outline" data-testid="button-export-pdf" onClick={async () => {
+            try {
+              const response = await fetch("/api/reports/export-pdf");
+              if (!response.ok) throw new Error("Failed to generate PDF");
+              const blob = await response.blob();
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `gym-report-${format(new Date(), "yyyy-MM-dd")}.pdf`;
+              a.click();
+              URL.revokeObjectURL(url);
+              toast({ title: "PDF exported", description: "Report downloaded successfully." });
+            } catch (error: any) {
+              toast({ 
+                title: "Export failed", 
+                description: error?.message || "Failed to generate PDF report",
+                variant: "destructive" 
+              });
+            }
           }}>
             <FileText className="h-4 w-4 mr-2" />
             Export PDF

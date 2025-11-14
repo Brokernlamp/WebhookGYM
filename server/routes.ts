@@ -1040,6 +1040,106 @@ app.delete("/api/attendance/:id", async (req: Request, res: Response) => {
 		}
 	});
 
+	// Send payment reminder via WhatsApp
+	app.post("/api/payments/:id/send-reminder", async (req: Request, res: Response, next: NextFunction) => {
+		try {
+			if (!isWAConnected) {
+				return res.status(400).json({ message: "WhatsApp not connected" });
+			}
+			const paymentId = req.params.id;
+			const payment = await storage.getPayment(paymentId);
+			if (!payment) {
+				return res.status(404).json({ message: "Payment not found" });
+			}
+			const member = await storage.getMember(payment.memberId);
+			if (!member || !member.phone) {
+				return res.status(400).json({ message: "Member not found or phone number missing" });
+			}
+			const formattedPhone = formatPhoneNumber(member.phone);
+			if (!formattedPhone) {
+				return res.status(400).json({ message: "Invalid phone number" });
+			}
+			const daysLeft = payment.dueDate ? calculateDaysLeft(payment.dueDate) : 0;
+			const message = `Hi ${member.name}, this is a reminder that your payment of ₹${Number(payment.amount || 0).toLocaleString()} for ${payment.planName || "membership"} is ${payment.status === "overdue" ? "overdue" : "pending"}. ${daysLeft > 0 ? `Due in ${daysLeft} days.` : daysLeft === 0 ? "Due today." : `Overdue by ${Math.abs(daysLeft)} days.`} Please make the payment at your earliest convenience. Thank you!`;
+			const result = await sendWhatsAppMessage(formattedPhone, message);
+			if (result.success) {
+				return jsonOk(res, { success: true, message: "Reminder sent successfully" });
+			} else {
+				return res.status(500).json({ message: result.error || "Failed to send reminder" });
+			}
+		} catch (err: any) {
+			next(err);
+		}
+	});
+
+	// Send member reminder via WhatsApp
+	app.post("/api/members/:id/send-reminder", async (req: Request, res: Response, next: NextFunction) => {
+		try {
+			if (!isWAConnected) {
+				return res.status(400).json({ message: "WhatsApp not connected" });
+			}
+			const memberId = req.params.id;
+			const member = await storage.getMember(memberId);
+			if (!member || !member.phone) {
+				return res.status(404).json({ message: "Member not found or phone number missing" });
+			}
+			const formattedPhone = formatPhoneNumber(member.phone);
+			if (!formattedPhone) {
+				return res.status(400).json({ message: "Invalid phone number" });
+			}
+			const daysLeft = member.expiryDate ? calculateDaysLeft(member.expiryDate) : 0;
+			const message = `Hi ${member.name}, this is a reminder that your ${member.planName || "membership"} ${member.expiryDate ? (daysLeft > 0 ? `expires in ${daysLeft} days` : daysLeft === 0 ? "expires today" : `expired ${Math.abs(daysLeft)} days ago`) : "status needs attention"}. ${member.paymentStatus === "pending" || member.paymentStatus === "overdue" ? "Please make your payment at your earliest convenience." : ""} Thank you!`;
+			const result = await sendWhatsAppMessage(formattedPhone, message);
+			if (result.success) {
+				return jsonOk(res, { success: true, message: "Reminder sent successfully" });
+			} else {
+				return res.status(500).json({ message: result.error || "Failed to send reminder" });
+			}
+		} catch (err: any) {
+			next(err);
+		}
+	});
+
+	// Export reports as PDF
+	app.get("/api/reports/export-pdf", async (_req: Request, res: Response, next: NextFunction) => {
+		try {
+			const { generateReportPdfBuffer } = await import("./invoice");
+			const members = await storage.listMembers();
+			const payments = await storage.listPayments();
+			const attendance = await storage.listAttendance();
+			
+			// Calculate summary data
+			const activeMembers = members.filter((m: any) => m.status === "active").length;
+			const totalRevenue = payments
+				.filter((p: any) => p.status === "paid")
+				.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
+			const totalCheckIns = attendance.length;
+			
+			const pdf = await generateReportPdfBuffer({
+				title: "Gym Management Report",
+				generatedDate: new Date().toISOString(),
+				summary: {
+					totalMembers: members.length,
+					activeMembers,
+					totalRevenue,
+					totalCheckIns,
+				},
+				business: {
+					name: process.env.BUSINESS_NAME || "Fitness Hub",
+					address: process.env.BUSINESS_ADDRESS || "Pune",
+					phone: process.env.BUSINESS_PHONE || "999999999",
+					email: process.env.BUSINESS_EMAIL || "123@gmail.com",
+				},
+			});
+			
+			res.setHeader("Content-Type", "application/pdf");
+			res.setHeader("Content-Disposition", `attachment; filename="gym-report-${new Date().toISOString().split("T")[0]}.pdf"`);
+			res.send(pdf);
+		} catch (err: any) {
+			next(err);
+		}
+	});
+
 	app.post("/api/whatsapp/disconnect", async (_req: Request, res: Response, next: NextFunction) => {
 		try {
 			await disconnectWhatsApp();

@@ -80,6 +80,26 @@ export default function Financial() {
       form.reset();
     },
   });
+
+  const sendPaymentReminder = useMutation({
+    mutationFn: async (paymentId: string) => {
+      const res = await apiRequest("POST", `/api/payments/${paymentId}/send-reminder`, {});
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      toast({
+        title: "Reminder sent",
+        description: data.message || "Payment reminder sent successfully via WhatsApp",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to send reminder",
+        description: error?.message || "Could not send payment reminder. Make sure WhatsApp is connected.",
+        variant: "destructive",
+      });
+    },
+  });
   const { data: members = [] } = useQuery({
     queryKey: ["/api/members"],
     queryFn: getQueryFn({ on401: "throw" }),
@@ -367,11 +387,7 @@ export default function Financial() {
             <PaymentTable
             payments={allPendingPayments}
             onSendReminder={(id) => {
-              const payment = allPendingPayments.find((p) => p.id === id);
-              toast({
-                title: "Reminder sent",
-                description: payment ? `Payment reminder sent to ${payment.memberName}` : "Reminder sent",
-              });
+              sendPaymentReminder.mutate(id);
             }}
           />
         </CardContent>

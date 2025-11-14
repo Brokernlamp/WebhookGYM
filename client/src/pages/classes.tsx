@@ -15,9 +15,17 @@ export default function Classes() {
           <h1 className="text-3xl font-bold">Classes & Schedule</h1>
           <p className="text-muted-foreground">Manage group classes and schedules</p>
         </div>
-        <Button data-testid="button-create-class">
+        <Button 
+          data-testid="button-create-class"
+          onClick={() => {
+            // Classes feature not implemented in backend
+            alert("Classes feature is not yet implemented. This will be available in a future update.");
+          }}
+          variant="outline"
+          disabled
+        >
           <Plus className="h-4 w-4 mr-2" />
-          Create Class
+          Create Class (Coming Soon)
         </Button>
       </div>
 
